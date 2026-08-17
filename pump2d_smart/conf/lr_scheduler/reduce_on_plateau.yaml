@@ -1,0 +1,9 @@
+# @package lr_scheduler
+type: "reduce_on_plateau"
+mode: "min"
+factor: 0.5
+patience: 5
+min_lr: 1e-6
+threshold: 1e-4
+metric: "val_rel_l1"
+verbose: true

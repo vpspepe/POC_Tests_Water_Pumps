@@ -1,0 +1,3 @@
+# @package lr_scheduler
+type: "exponential"
+gamma: 0.95

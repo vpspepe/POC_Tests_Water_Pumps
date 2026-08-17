@@ -1,0 +1,14 @@
+defaults:
+  - model: smart_small
+  - training: default
+  - optimizer: adamw
+  - lr_scheduler: reduce_on_plateau
+  - early_stopping: default
+  - features: volume_only
+  - loss: volume_mse
+  - data: pump2d
+  - tracking: mlflow
+  - _self_
+
+exp_name: "exp_003_hydra_volume"
+resume_from_checkpoint: ""

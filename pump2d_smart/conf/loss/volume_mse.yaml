@@ -1,0 +1,11 @@
+# @package loss
+type: "mse"
+surface_fields: []
+volume_fields:
+  - "pressure"
+  - "velocity_x"
+  - "velocity_y"
+physics_terms:
+  continuity_weight: 0.0
+  momentum_weight: 0.0
+  boundary_penalty_weight: 0.0

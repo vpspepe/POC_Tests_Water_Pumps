@@ -1,0 +1,9 @@
+# @package training
+epochs: 50
+batch_size: 2
+seed: 42
+device: "cuda"
+num_threads: 2
+num_workers: 0
+save_model_dir: "./checkpoints"
+experiments_dir: "./experiments"

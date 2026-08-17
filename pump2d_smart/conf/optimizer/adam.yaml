@@ -1,0 +1,7 @@
+# @package optimizer
+type: "adam"
+learning_rate: 1e-3
+weight_decay: 0.0
+beta1: 0.9
+beta2: 0.999
+eps: 1e-8

@@ -1,0 +1,7 @@
+# @package early_stopping
+enabled: false
+patience: 0
+min_delta: 0.0
+mode: "min"
+metric: "val_loss"
+verbose: false

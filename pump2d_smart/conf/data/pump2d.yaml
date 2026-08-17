@@ -1,0 +1,7 @@
+# @package data
+main_vtu_path: "/home/vpspepe/Documents/TUD/HiWi/Ecotwin/data/raw/comsol/Pump2D_MRFStudy_finer_Main.vtu"
+outlet_vtu_path: "/home/vpspepe/Documents/TUD/HiWi/Ecotwin/data/raw/comsol/Pump2D_MRFStudy_finer_Outlet.vtu"
+cache_dir: "./cache"
+test_split: 0.5
+sparse_hq_split: true
+seed: 42

@@ -1,0 +1,4 @@
+# @package lr_scheduler
+type: "cosine_annealing"
+T_max: 50
+eta_min: 1e-6

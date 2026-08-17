@@ -1,0 +1,12 @@
+# @package model
+_target_: models.smart.smart.SMART
+spatial_dim: 2
+parameter_channels: 2
+latent_dim: 64
+latent_geometry_points: 64
+subsampled_geometry_points: 128
+num_encoder_decoder_blocks: 2
+num_heads: 4
+pos_scale_factor: 1000.0
+dropout: 0.0
+subregion_size: 1000
