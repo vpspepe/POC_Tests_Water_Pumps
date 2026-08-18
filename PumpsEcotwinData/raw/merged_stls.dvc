@@ -1,0 +1,6 @@
+outs:
+- md5: a3679810aea299b22c800355b2cf4df3.dir
+  size: 11394482
+  nfiles: 11
+  hash: md5
+  path: merged_stls
