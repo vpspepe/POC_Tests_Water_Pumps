@@ -6,6 +6,6 @@ volume_fields:
   - "velocity_x"
   - "velocity_y"
 physics_terms:
-  continuity_weight: 0.0
-  momentum_weight: 0.0
-  boundary_penalty_weight: 0.0
+  mass_weight: 0.01
+  flux_weight: 0.01
+  outlet_p_weight: 0.01

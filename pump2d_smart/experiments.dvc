@@ -1,0 +1,6 @@
+outs:
+- md5: 8d7bd56b9afbc5de7a5bb81d04ba60ef.dir
+  size: 84758377
+  nfiles: 80
+  hash: md5
+  path: experiments

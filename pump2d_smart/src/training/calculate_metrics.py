@@ -53,12 +53,18 @@ def calculate_validation_metrics(
         use_sdf_mrf=bool(getattr(cfg_features, "use_sdf_mrf", True)),
     )
 
+    test_split = getattr(cfg_data, "test_split", 0.5)
+    test_split_val = float(test_split) if test_split is not None else None
+    n_train = getattr(cfg_data, "n_train", None)
+    n_train_val = int(n_train) if n_train is not None else None
+
     test_dataset = Pump2DDataset(
         main_vtu_path=getattr(cfg_data, "main_vtu_path", ""),
         outlet_vtu_path=getattr(cfg_data, "outlet_vtu_path", ""),
         cache_dir=getattr(cfg_data, "cache_dir", "./cache"),
         if_test=True,
-        test_split=float(getattr(cfg_data, "test_split", 0.5)),
+        test_split=test_split_val,
+        n_train=n_train_val,
         sparse_hq_split=bool(getattr(cfg_data, "sparse_hq_split", True)),
     )
 

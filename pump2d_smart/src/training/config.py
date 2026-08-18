@@ -93,9 +93,9 @@ class FeaturesConfig:
 class PhysicsTermsConfig:
     """Weights for physics-informed penalty terms in loss."""
 
-    continuity_weight: float = 0.0
-    momentum_weight: float = 0.0
-    boundary_penalty_weight: float = 0.0
+    mass_weight: float = 0.0
+    flux_weight: float = 0.0
+    outlet_p_weight: float = 0.0
 
 
 @dataclass
@@ -117,8 +117,9 @@ class DataConfig:
     main_vtu_path: str = "/home/vpspepe/Documents/TUD/HiWi/Ecotwin/data/raw/comsol/Pump2D_MRFStudy_finer_Main.vtu"
     outlet_vtu_path: str = "/home/vpspepe/Documents/TUD/HiWi/Ecotwin/data/raw/comsol/Pump2D_MRFStudy_finer_Outlet.vtu"
     cache_dir: str = "./cache"
-    test_split: float = 0.5
+    test_split: float | None = 0.5
     sparse_hq_split: bool = True
+    n_train: int | None = None
     seed: int = 42
 
 
@@ -128,7 +129,9 @@ class TrackingConfig:
 
     enabled: bool = True
     experiment_name: str = "Pump2D_SMART_Surrogate"
-    tracking_uri: str = "file:./mlruns"
+    tracking_uri: str = (
+        "file:///home/vpspepe/Documents/TUD/HiWi/Ecotwin/POC_Tests/mlruns"
+    )
     log_model_artifacts: bool = True
     log_config_yaml: bool = True
 

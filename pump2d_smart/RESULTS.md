@@ -6,10 +6,14 @@ This document serves as the single centralized ledger for tracking all training 
 
 ## 1. Experiments Summary Overview
 
-| Experiment ID | Split Method | Train / Test Ratio | Best Val Loss | Pressure Rel L2 | Velocity Mag Rel L2 | Head MAE [m] | Head Rel Err [%] | Status |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| [`exp_002_volume_sparse20`](#experiment-002-volume-only-sparse-interleaved-2080) | Sparse Interleaved (Stride=5) | 20% / 80% (53 / 191) | `0.0078` | **2.67%** | **13.76%** | **0.1712 m** | **14.18%** | Completed |
-| [`exp_003_hydra_volume_mse`](#experiment-003-hydra-volume-only-mse-training) | Sparse H-Q Interleaved (50/50) | 50% / 50% (122 / 122) | `0.0024` | **1.00%** | **3.77%** | **0.0524 m** | **2.19%** | **Completed** |
+| Experiment ID | Split Method | Train / Test Ratio | Best Val Loss (Rel L1) | Pressure Rel L2 | Velocity Mag Rel L2 | Status |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| [`exp_002_volume_sparse20`](#experiment-002-volume-only-sparse-interleaved-2080) | Sparse Interleaved (Stride=5) | 20% / 80% (53 / 191) | `7.80%` | **2.67%** | **13.76%** | Completed |
+| [`exp_003_hydra_volume_mse`](#experiment-003-hydra-volume-only-mse-training) | Sparse H-Q Interleaved (50/50) | 50% / 50% (122 / 122) | `0.77%` | **1.00%** | **3.77%** | Completed |
+| [`exp_005_15pts_mse_only`](#experiment-005-15-points-pure-mse-baseline) | Kennard-Stone (15 pts) | 6.1% / 93.9% (15 / 229) | `11.70%` | **3.20%** | **13.24%** | **Completed** |
+| [`exp_006_15pts_mse_mass`](#experiment-006-15-points-mse--mass-loss) | Kennard-Stone (15 pts) | 6.1% / 93.9% (15 / 229) | `27.28%` | **4.05%** | **27.32%** | **Completed** |
+| [`exp_007_15pts_mse_flux`](#experiment-007-15-points-mse--flux-loss) | Kennard-Stone (15 pts) | 6.1% / 93.9% (15 / 229) | `11.26%` | **3.18%** | **12.72%** | **Best Physics Model** |
+| [`exp_008_15pts_mse_pressure_bc`](#experiment-008-15-points-mse--outlet-pressure-bc) | Kennard-Stone (15 pts) | 6.1% / 93.9% (15 / 229) | `11.95%` | **3.27%** | **13.45%** | **Completed** |
 
 ---
 
@@ -90,3 +94,39 @@ This document serves as the single centralized ledger for tracking all training 
 * **Velocity X Contours:** [`results/velocity_x_comparison.png`](file:///home/vpspepe/Documents/TUD/HiWi/Ecotwin/POC_Tests/pump2d_smart/results/velocity_x_comparison.png)
 * **Velocity Y Contours:** [`results/velocity_y_comparison.png`](file:///home/vpspepe/Documents/TUD/HiWi/Ecotwin/POC_Tests/pump2d_smart/results/velocity_y_comparison.png)
 * **Velocity Magnitude Contours:** [`results/velocity_mag_comparison.png`](file:///home/vpspepe/Documents/TUD/HiWi/Ecotwin/POC_Tests/pump2d_smart/results/velocity_mag_comparison.png)
+
+---
+
+## 4. Physics Loss Ablation Study (15 Training Points, 3 SMART Blocks)
+
+* **Date:** 2026-08-18
+* **Setup:** SMART neural operator with 3 Encoder/Decoder blocks, Concat + Fusion MLP, and per-block FiLM modulation (`extra_query_dim=2`).
+* **Dataset:** Exactly **15 training points** selected via Kennard-Stone space-filling metric across the $H$-$Q$ operating envelope, evaluated on **229 unseen validation test cases**.
+* **Training Protocol:** Up to 400 epochs, `ReduceLROnPlateau`, and 15-epoch early stopping. All final metrics evaluated exclusively on the best checkpoint.
+* **Tracking:** Centralized MLflow FileStore at `POC_Tests/mlruns/`.
+
+### Comparative Performance Table (229 Unseen Test Cases)
+
+| Experiment ID | Loss Formulation | Best Val Loss (Rel L1) | Pressure Rel L2 | Pressure $R^2$ | VelMag Rel L2 | VelMag $R^2$ | Key Finding |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
+| **[`exp_005_15pts_mse_only`](experiments/exp_005_15pts_mse_only)** | Pure MSE Baseline | `11.70%` | `3.20%` | `0.9418` | `13.24%` | `0.8988` | Strong baseline with Concat+FiLM |
+| **[`exp_006_15pts_mse_mass`](experiments/exp_006_15pts_mse_mass)** | MSE + Mass Loss ($\lambda=0.01$) | `27.28%` | `4.05%` | `0.8917` | `27.32%` | `0.5703` | Autograd 2nd derivatives regularize aggressively with 15 pts |
+| **[`exp_007_15pts_mse_flux`](experiments/exp_007_15pts_mse_flux)** | MSE + Flux Loss ($\lambda=0.01$) | **`11.26%`** | **`3.18%`** | **`0.9423`** | **`12.72%`** | **`0.9063`** | **Best overall surrogate performance** (improved velocity accuracy) |
+| **[`exp_008_15pts_mse_pressure_bc`](experiments/exp_008_15pts_mse_pressure_bc)** | MSE + Outlet Pressure BC ($\lambda=0.01$) | `11.95%` | `3.27%` | `0.9387` | `13.45%` | `0.8954` | Stable Dirichlet anchor on outlet boundary |
+
+### Detailed Breakdown by Experiment
+
+#### A. Experiment 007: MSE + Flux Continuity Loss (Top Performer)
+* **Directory:** [`experiments/exp_007_15pts_mse_flux/`](file:///home/vpspepe/Documents/TUD/HiWi/Ecotwin/POC_Tests/pump2d_smart/experiments/exp_007_15pts_mse_flux)
+* **Physical formulation:** Line-integral mass flux balance: $\int_{\Gamma_{\text{in}}} (\mathbf{u} \cdot \mathbf{n})\, ds + \int_{\Gamma_{\text{out}}} (\mathbf{u} \cdot \mathbf{n})\, ds = 0$.
+* **Quantitative Field Errors:**
+  * **Volume Pressure ($p$):** Rel $L_1 = 2.40\%$, Rel $L_2 = \mathbf{3.18\%}$, $R^2 = \mathbf{0.9423}$, MAE = $2.10 \times 10^3\text{ Pa}$
+  * **Velocity X ($v_x$):** Rel $L_1 = 16.14\%$, Rel $L_2 = 17.09\%$, $R^2 = \mathbf{0.9701}$, MAE = $0.404\text{ m/s}$
+  * **Velocity Y ($v_y$):** Rel $L_1 = 15.32\%$, Rel $L_2 = 16.64\%$, $R^2 = \mathbf{0.9718}$, MAE = $0.413\text{ m/s}$
+  * **Velocity Magnitude ($|v|$):** Rel $L_1 = 10.60\%$, Rel $L_2 = \mathbf{12.72\%}$, $R^2 = \mathbf{0.9063}$, MAE = $0.436\text{ m/s}$
+* **Key Visualizations:**
+  * Loss Progression Curve: [`experiments/exp_007_15pts_mse_flux/plots/loss_curve.png`](file:///home/vpspepe/Documents/TUD/HiWi/Ecotwin/POC_Tests/pump2d_smart/experiments/exp_007_15pts_mse_flux/plots/loss_curve.png)
+  * Velocity Magnitude Comparison: [`experiments/exp_007_15pts_mse_flux/plots/velocity_mag_comparison.png`](file:///home/vpspepe/Documents/TUD/HiWi/Ecotwin/POC_Tests/pump2d_smart/experiments/exp_007_15pts_mse_flux/plots/velocity_mag_comparison.png)
+  * Pressure Comparison: [`experiments/exp_007_15pts_mse_flux/plots/pressure_comparison.png`](file:///home/vpspepe/Documents/TUD/HiWi/Ecotwin/POC_Tests/pump2d_smart/experiments/exp_007_15pts_mse_flux/plots/pressure_comparison.png)
+  * H-Q Head Prediction Curves: [`experiments/exp_007_15pts_mse_flux/plots/eval_pump_head_curves.png`](file:///home/vpspepe/Documents/TUD/HiWi/Ecotwin/POC_Tests/pump2d_smart/experiments/exp_007_15pts_mse_flux/plots/eval_pump_head_curves.png)
+

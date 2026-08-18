@@ -41,8 +41,9 @@ class Pump2DDataset(Dataset[Pump2DSample]):
         outlet_vtu_path: str,
         cache_dir: str = "./cache",
         if_test: bool = False,
-        test_split: float = 0.5,
+        test_split: float | None = None,
         sparse_hq_split: bool = True,
+        n_train: int | None = None,
         seed: int = 42,
     ) -> None:
         """Initializes the dataset and loads/caches processed data.
@@ -52,16 +53,25 @@ class Pump2DDataset(Dataset[Pump2DSample]):
             outlet_vtu_path: Absolute path to the outlet grid VTU.
             cache_dir: Folder to save/load processed .npz arrays.
             if_test: If True, load test samples; otherwise load train samples.
-            test_split: Fraction of dataset allocated to validation/test.
+            test_split: Fraction of dataset allocated to validation/test (mutually exclusive with n_train).
             sparse_hq_split: If True, uses interleaved sparse sampling per RPM curve.
+            n_train: Exact number of training samples selected with Kennard-Stone (mutually exclusive with test_split).
             seed: Random seed for splitting dataset.
         """
+        if n_train is not None and test_split is not None:
+            raise ValueError(
+                "Specify either 'n_train' (integer count) or 'test_split' (fraction), not both!"
+            )
+        if n_train is None and test_split is None:
+            test_split = 0.5  # Default 50/50 split if neither is provided
+
         self.main_vtu_path: str = main_vtu_path
         self.outlet_vtu_path: str = outlet_vtu_path
         self.cache_dir: str = cache_dir
         self.if_test: bool = if_test
-        self.test_split: float = test_split
+        self.test_split: float | None = test_split
         self.sparse_hq_split: bool = sparse_hq_split
+        self.n_train: int | None = n_train
         self.seed: int = seed
 
         self.samples: list[dict[str, np.ndarray]] = []
@@ -85,9 +95,14 @@ class Pump2DDataset(Dataset[Pump2DSample]):
         self.active_indices: np.ndarray = (
             self.test_indices if if_test else self.train_indices
         )
+        split_desc = (
+            f"n_train={len(self.train_indices)}, n_val={len(self.test_indices)}"
+            if self.n_train is not None
+            else f"test_split={self.test_split}"
+        )
         print(
             f"Dataset mode: {'TEST' if if_test else 'TRAIN'} | "
-            f"Number of samples: {len(self.active_indices)} (Split: Sparse H-Q 50/50)"
+            f"Number of active samples: {len(self.active_indices)} (Total: {len(self.samples)} | {split_desc})"
         )
 
         # 4. Compute standardization parameters
@@ -110,7 +125,10 @@ class Pump2DDataset(Dataset[Pump2DSample]):
         params_std = np.where(params_std == 0.0, 1.0, params_std)
         X = (params - params_mean) / params_std
 
-        train_size = round(n_samples * (1.0 - self.test_split))
+        if self.n_train is not None and self.n_train > 0:
+            train_size = int(self.n_train)
+        else:
+            train_size = round(n_samples * (1.0 - float(self.test_split)))
         return kennard_stone_split(X, train_size)
 
     def _build_dataset(self) -> None:
@@ -444,6 +462,16 @@ class Pump2DDataset(Dataset[Pump2DSample]):
                 }
             )
         print(f"Loaded {len(self.samples)} processed samples from cache.")
+
+    @property
+    def inlet_edges(self) -> np.ndarray:
+        """Edge connectivity indices for inlet boundary."""
+        return self.boundary_data["e_in"]
+
+    @property
+    def outlet_edges(self) -> np.ndarray:
+        """Edge connectivity indices for outlet boundary."""
+        return self.boundary_data["e_out"]
 
     @property
     def idx_in(self) -> np.ndarray:

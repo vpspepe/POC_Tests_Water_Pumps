@@ -9,6 +9,8 @@ import os
 from os.path import join as pjoin
 from typing import Any
 
+os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
+
 import mlflow
 import numpy as np
 import torch
@@ -16,6 +18,9 @@ from models.smart.smart import SMART
 from omegaconf import DictConfig, OmegaConf
 from src.data.dataset import Pump2DDataset
 from src.loss.losses import CombinedLoss, RelL2Loss
+from src.loss.physics_losses import (
+    ECOTWINPhysicsLoss,
+)
 from src.training.config import Pump2DConfig
 from src.training.early_stopping import EarlyStopping
 from src.training.experiment_manager import ExperimentManager
@@ -119,7 +124,13 @@ class Pump2DTrainer:
         cache_dir = getattr(self.cfg_data, "cache_dir", "./cache")
         main_vtu = getattr(self.cfg_data, "main_vtu_path", "")
         outlet_vtu = getattr(self.cfg_data, "outlet_vtu_path", "")
-        test_split = float(getattr(self.cfg_data, "test_split", 0.5))
+        n_train = getattr(self.cfg_data, "n_train", None)
+        test_split = getattr(self.cfg_data, "test_split", None)
+        if n_train is not None:
+            test_split = None
+        elif test_split is None:
+            test_split = 0.5
+
         sparse_hq_split = bool(getattr(self.cfg_data, "sparse_hq_split", True))
         seed = int(getattr(self.cfg_training, "seed", 42))
 
@@ -130,6 +141,7 @@ class Pump2DTrainer:
             if_test=False,
             test_split=test_split,
             sparse_hq_split=sparse_hq_split,
+            n_train=n_train,
             seed=seed,
         )
         self.test_dataset = Pump2DDataset(
@@ -139,6 +151,7 @@ class Pump2DTrainer:
             if_test=True,
             test_split=test_split,
             sparse_hq_split=sparse_hq_split,
+            n_train=n_train,
             seed=seed,
         )
 
@@ -221,7 +234,7 @@ class Pump2DTrainer:
         )
 
     def _init_loss_function(self) -> None:
-        """Builds the composite loss function based on configured criteria."""
+        """Builds the composite loss function and initializes ECOTWINPhysicsLoss."""
         loss_type = str(getattr(self.cfg_loss, "type", "mse")).lower()
         if loss_type == "l1":
             base_loss = torch.nn.L1Loss(reduction="mean")
@@ -239,6 +252,107 @@ class Pump2DTrainer:
             ],
         }
         self.loss_fn = CombinedLoss(base_loss, fields)
+
+        # 2. Physics-Informed Loss Manager
+        cfg_phys = getattr(self.cfg_loss, "physics_terms", None)
+        w_mass = float(
+            getattr(
+                cfg_phys, "mass_weight", getattr(cfg_phys, "continuity_weight", 0.0)
+            )
+        )
+        w_flux = float(
+            getattr(cfg_phys, "flux_weight", getattr(cfg_phys, "momentum_weight", 0.0))
+        )
+        w_outlet_p = float(
+            getattr(
+                cfg_phys,
+                "outlet_p_weight",
+                getattr(cfg_phys, "boundary_penalty_weight", 0.0),
+            )
+        )
+        w_wall = float(getattr(cfg_phys, "wall_bc_weight", 0.0))
+
+        self.physics_loss = ECOTWINPhysicsLoss(
+            weight_mass=w_mass,
+            weight_wall=w_wall,
+            weight_flux=w_flux,
+            weight_outlet_p=w_outlet_p,
+        )
+        self.use_physics = (
+            w_mass > 0.0 or w_flux > 0.0 or w_outlet_p > 0.0 or w_wall > 0.0
+        )
+
+        # 3. Pre-allocated boundary tensors on target device
+        self.idx_in_tensor = torch.as_tensor(
+            self.train_dataset.idx_in, device=self.device
+        )
+        self.idx_out_tensor = torch.as_tensor(
+            self.train_dataset.idx_out, device=self.device
+        )
+        self.norm_in_tensor = torch.as_tensor(
+            self.train_dataset.inlet_normals, dtype=torch.float32, device=self.device
+        )
+        self.norm_out_tensor = torch.as_tensor(
+            self.train_dataset.outlet_normals, dtype=torch.float32, device=self.device
+        )
+        self.weights_in_tensor = torch.as_tensor(
+            self.train_dataset.inlet_weights, dtype=torch.float32, device=self.device
+        )
+        self.weights_out_tensor = torch.as_tensor(
+            self.train_dataset.outlet_weights, dtype=torch.float32, device=self.device
+        )
+        self.e_in_tensor = torch.as_tensor(
+            self.train_dataset.inlet_edges, dtype=torch.int64, device=self.device
+        )
+        self.e_out_tensor = torch.as_tensor(
+            self.train_dataset.outlet_edges, dtype=torch.int64, device=self.device
+        )
+
+        # Target normalized outlet pressure (100 kPa)
+        self.target_p_out_norm = (
+            100000.0 - self.train_dataset.mean_vol_data[0]
+        ) / self.train_dataset.std_vol_data[0]
+
+    def _compute_physics_loss(
+        self, pred_vol: torch.Tensor, vol_coords: torch.Tensor
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        """Evaluates ECOTWINPhysicsLoss for the batch.
+
+        Args:
+            pred_vol: Predicted volume field tensor [p, vx, vy].
+            vol_coords: Collocation spatial coordinates (with requires_grad=True).
+
+        Returns:
+            Tuple of [weighted_scalar_physics_loss, metrics_dict].
+        """
+        # Node velocities at boundaries
+        u_in_nodes = pred_vol[0, self.idx_in_tensor, 1:3]
+        u_out_nodes = pred_vol[0, self.idx_out_tensor, 1:3]
+
+        # Mid-segment velocities for line integrals
+        u_in_edges = 0.5 * (
+            u_in_nodes[self.e_in_tensor[:, 0]] + u_in_nodes[self.e_in_tensor[:, 1]]
+        )
+        u_out_edges = 0.5 * (
+            u_out_nodes[self.e_out_tensor[:, 0]] + u_out_nodes[self.e_out_tensor[:, 1]]
+        )
+
+        p_out_pred = pred_vol[..., self.idx_out_tensor, 0]
+
+        return self.physics_loss(
+            vol_u_x=pred_vol[..., 1],
+            vol_u_y=pred_vol[..., 2],
+            vol_coords=vol_coords,
+            inlet_u_pred=u_in_edges,
+            inlet_normals=self.norm_in_tensor,
+            inlet_weights=self.weights_in_tensor,
+            outlet_u_pred=u_out_edges,
+            outlet_normals=self.norm_out_tensor,
+            outlet_weights=self.weights_out_tensor,
+            q_in=0.0,
+            outlet_p_pred=p_out_pred,
+            outlet_p_target=self.target_p_out_norm,
+        )
 
     def _init_experiment_tracking(self) -> None:
         """Sets up isolated experiment directory structure and checkpoint paths."""
@@ -288,40 +402,87 @@ class Pump2DTrainer:
     # Training & Validation Loops
     # =========================================================================
 
-    def train_epoch(self) -> float:
-        """Trains the model for one epoch.
+    def _forward_batch(
+        self, batch: dict[str, Any], requires_grad_coords: bool = False
+    ) -> tuple[
+        torch.Tensor | None,
+        torch.Tensor,
+        torch.Tensor | None,
+        torch.Tensor,
+        torch.Tensor,
+    ]:
+        """Unified helper to extract batch tensors, prepare queries, and run SMART forward pass.
+
+        Args:
+            batch: Dictionary batch from DataLoader.
+            requires_grad_coords: If True, enables autograd on volume coordinates for PDE loss.
 
         Returns:
-            Mean training loss over the epoch.
+            Tuple of [pred_surf, pred_vol, surf_d, vol_d, vol_c].
         """
-        self.model.train()
-        epoch_loss = 0.0
+        geo = batch["geometry"].to(self.device)
+        vol_c = batch["volume_coords"].to(self.device)
+        if requires_grad_coords:
+            vol_c.requires_grad_(True)
 
-        for batch in self.train_loader:
-            geo = batch["geometry"].to(self.device)
-            vol_c = batch["volume_coords"].to(self.device)
-            vol_e = batch["volume_extra"].to(self.device)
-            vol_d = batch["volume_data"].to(self.device)
-            params = batch["params"].to(self.device)
+        vol_e = batch["volume_extra"].to(self.device)
+        vol_d = batch["volume_data"].to(self.device)
+        params = batch["params"].to(self.device)
 
-            extra_features = self.feature_manager.extract_extra_features(vol_e)
-            surf_c, surf_d = self.feature_manager.prepare_surface_queries(
-                batch, self.device
-            )
+        extra_features = self.feature_manager.extract_extra_features(vol_e)
+        surf_c, surf_d = self.feature_manager.prepare_surface_queries(
+            batch, self.device
+        )
 
-            self.optimizer.zero_grad()
-
+        if requires_grad_coords and torch.cuda.is_available():
+            with torch.nn.attention.sdpa_kernel([torch.nn.attention.SDPBackend.MATH]):
+                pred_surf, pred_vol = self.model(
+                    geo, surf_c, vol_c, params, extra_query_features=extra_features
+                )
+        else:
             pred_surf, pred_vol = self.model(
                 geo, surf_c, vol_c, params, extra_query_features=extra_features
             )
 
-            loss = self.loss_fn(pred_surf, pred_vol, surf_d, vol_d)
-            loss.backward()
+        return pred_surf, pred_vol, surf_d, vol_d, vol_c
 
+    def train_epoch(self) -> tuple[float, dict[str, float]]:
+        """Trains the model for one epoch and evaluates loss component gradient norms.
+
+        Returns:
+            Tuple of [mean_epoch_loss, gradient_norms_dict].
+        """
+        self.model.train()
+        epoch_loss = 0.0
+        req_grad = self.use_physics and self.physics_loss.weight_mass > 0.0
+        grad_norms: dict[str, float] = {}
+
+        for batch_idx, batch in enumerate(self.train_loader):
+            self.optimizer.zero_grad()
+
+            pred_surf, pred_vol, surf_d, vol_d, vol_c = self._forward_batch(
+                batch, requires_grad_coords=req_grad
+            )
+
+            loss, loss_components = self.loss_fn.forward_with_components(
+                pred_surf, pred_vol, surf_d, vol_d
+            )
+
+            if self.use_physics:
+                phys_loss, _ = self._compute_physics_loss(pred_vol, vol_c)
+                loss = loss + phys_loss
+
+            # Compute component gradient norms on last batch of epoch via loss_fn
+            if batch_idx == len(self.train_loader) - 1:
+                grad_norms = self.loss_fn.compute_gradient_norms(
+                    loss_components, self.model.parameters()
+                )
+
+            loss.backward()
             self.optimizer.step()
             epoch_loss += loss.item()
 
-        return epoch_loss / len(self.train_loader)
+        return epoch_loss / len(self.train_loader), grad_norms
 
     @torch.no_grad()
     def validate(self) -> dict[str, float]:
@@ -334,21 +495,7 @@ class Pump2DTrainer:
         val_loss = 0.0
 
         for batch in self.test_loader:
-            geo = batch["geometry"].to(self.device)
-            vol_c = batch["volume_coords"].to(self.device)
-            vol_e = batch["volume_extra"].to(self.device)
-            vol_d = batch["volume_data"].to(self.device)
-            params = batch["params"].to(self.device)
-
-            extra_features = self.feature_manager.extract_extra_features(vol_e)
-            surf_c, surf_d = self.feature_manager.prepare_surface_queries(
-                batch, self.device
-            )
-
-            pred_surf, pred_vol = self.model(
-                geo, surf_c, vol_c, params, extra_query_features=extra_features
-            )
-
+            pred_surf, pred_vol, surf_d, vol_d, _ = self._forward_batch(batch)
             loss = self.loss_fn(pred_surf, pred_vol, surf_d, vol_d)
             val_loss += loss.item()
 
@@ -543,10 +690,17 @@ class Pump2DTrainer:
 
             # 2. Restore best weights for evaluation
             if os.path.exists(self.best_checkpoint_path):
+                print(
+                    f"Loading best model checkpoint for final evaluation: {self.best_checkpoint_path}"
+                )
                 best_ckpt = torch.load(
                     self.best_checkpoint_path, map_location=self.device
                 )
                 self.model.load_state_dict(best_ckpt["model_state_dict"])
+
+            # Compute final quantitative field error metrics exclusively on the BEST model
+            best_val_raw = self.validate()
+            best_final_metrics = {f"best_val_{k}": v for k, v in best_val_raw.items()}
 
             # 3. Flow field prediction contours (Pressure, Vx, Vy, VelMag)
             plot_field_contours(
@@ -568,12 +722,13 @@ class Pump2DTrainer:
                 exp_name=self.exp_name,
             )
             print(
-                f"Validation Head MAE: {head_metrics['val_Head_MAE_m']:.4f} m | "
+                f"Best Model Validation Head MAE: {head_metrics['val_Head_MAE_m']:.4f} m | "
                 f"Rel Error: {head_metrics['val_Head_Rel_Error_pct']:.2f}%"
             )
 
-            # 5. Log all figures and model checkpoint to MLflow
+            # 5. Log all figures, best final metrics, and model checkpoint to MLflow
             if tracking_enabled:
+                mlflow.log_metrics(best_final_metrics)
                 mlflow.log_metrics(head_metrics)
                 self.exp_manager.log_artifacts_to_mlflow(self.best_checkpoint_path)
 
@@ -588,6 +743,23 @@ class Pump2DTrainer:
 
         if tracking_enabled:
             tracking_uri = getattr(self.cfg_tracking, "tracking_uri", "file:./mlruns")
+            # If relative file or sqlite URI, anchor it automatically to the POC_Tests root directory
+            if tracking_uri.startswith("sqlite:///") and not tracking_uri.startswith(
+                "sqlite:////"
+            ):
+                rel_db_name = tracking_uri.replace("sqlite:///", "")
+                poc_root = os.path.abspath(
+                    pjoin(os.path.dirname(__file__), "..", "..", "..")
+                )
+                abs_db_path = pjoin(poc_root, rel_db_name)
+                tracking_uri = f"sqlite:///{abs_db_path}"
+            elif tracking_uri.startswith("file:.") or tracking_uri == "file:./mlruns":
+                poc_root = os.path.abspath(
+                    pjoin(os.path.dirname(__file__), "..", "..", "..")
+                )
+                abs_mlruns_path = pjoin(poc_root, "mlruns")
+                tracking_uri = f"file://{abs_mlruns_path}"
+
             mlflow.set_tracking_uri(tracking_uri)
             mlflow.set_experiment(exp_name)
 
@@ -631,7 +803,7 @@ class Pump2DTrainer:
 
             try:
                 for epoch in range(self.start_epoch, total_target_epoch + 1):
-                    train_loss = self.train_epoch()
+                    train_loss, grad_norms = self.train_epoch()
                     val_metrics = self.validate()
 
                     val_loss = val_metrics["val_loss"]
@@ -646,6 +818,7 @@ class Pump2DTrainer:
                     epoch_metrics: dict[str, float] = {
                         "train_loss": train_loss,
                         "learning_rate": current_lr,
+                        **grad_norms,
                         **val_metrics,
                     }
 

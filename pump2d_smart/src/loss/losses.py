@@ -59,7 +59,7 @@ class RelL2Loss:
 
 
 class CombinedLoss:
-    """Computes combined loss across surface and volume fields."""
+    """Computes combined loss across surface and volume fields with component tracking and gradient norm calculation."""
 
     def __init__(self, loss_fn: Any, fields: dict[str, list[str]]) -> None:
         """Initializes CombinedLoss.
@@ -71,14 +71,14 @@ class CombinedLoss:
         self.loss_fn = loss_fn
         self.fields = fields
 
-    def __call__(
+    def forward_with_components(
         self,
         y_hat_surf: torch.Tensor | None,
         y_hat_vol: torch.Tensor,
         y_surf: torch.Tensor | None,
         y_vol: torch.Tensor,
-    ) -> torch.Tensor:
-        """Computes the combined loss.
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Computes total loss and breaks down individual per-channel field losses.
 
         Args:
             y_hat_surf: Predicted surface tensor.
@@ -87,11 +87,77 @@ class CombinedLoss:
             y_vol: Ground truth volume tensor.
 
         Returns:
-            Scalar combined loss tensor.
+            Tuple of [total_loss_tensor, components_dict].
         """
-        if not self.fields.get("surface") or y_hat_surf is None or y_surf is None:
-            return self.loss_fn(y_hat_vol, y_vol)
+        components: dict[str, torch.Tensor] = {}
+
+        # Individual field component losses
+        vol_fields = self.fields.get("volume", ["pressure", "velocity_x", "velocity_y"])
+        for i, name in enumerate(vol_fields):
+            if i < y_hat_vol.shape[-1]:
+                components[name] = self.loss_fn(y_hat_vol[..., i], y_vol[..., i])
 
         loss_vol = self.loss_fn(y_hat_vol, y_vol)
-        loss_surf = self.loss_fn(y_hat_surf, y_surf)
-        return loss_vol + loss_surf
+
+        if self.fields.get("surface") and y_hat_surf is not None and y_surf is not None:
+            loss_surf = self.loss_fn(y_hat_surf, y_surf)
+            components["surface_pressure"] = loss_surf
+            total_loss = loss_vol + loss_surf
+        else:
+            total_loss = loss_vol
+
+        components["total_data"] = total_loss
+        return total_loss, components
+
+    def compute_gradient_norms(
+        self,
+        components: dict[str, torch.Tensor],
+        model_parameters: Any,
+    ) -> dict[str, float]:
+        """Computes Euclidean gradient norm ||d(L_k)/d(theta)||_2 for each loss component.
+
+        Args:
+            components: Dictionary mapping component names to scalar loss tensors.
+            model_parameters: Iterable of model parameters.
+
+        Returns:
+            Dictionary mapping grad_norm_<component> to float magnitude.
+        """
+        params_list = [p for p in model_parameters if p.requires_grad]
+        grad_norms: dict[str, float] = {}
+
+        for name, comp_loss in components.items():
+            if (
+                comp_loss is None
+                or not isinstance(comp_loss, torch.Tensor)
+                or not comp_loss.requires_grad
+            ):
+                continue
+
+            grads = torch.autograd.grad(
+                comp_loss,
+                params_list,
+                retain_graph=True,
+                allow_unused=True,
+            )
+            total_sq = sum(
+                (g.detach() ** 2).sum().item() for g in grads if g is not None
+            )
+            grad_norms[f"grad_norm_{name}"] = float(
+                torch.tensor(total_sq).sqrt().item()
+            )
+
+        return grad_norms
+
+    def __call__(
+        self,
+        y_hat_surf: torch.Tensor | None,
+        y_hat_vol: torch.Tensor,
+        y_surf: torch.Tensor | None,
+        y_vol: torch.Tensor,
+    ) -> torch.Tensor:
+        """Computes the scalar combined loss."""
+        total_loss, _ = self.forward_with_components(
+            y_hat_surf, y_hat_vol, y_surf, y_vol
+        )
+        return total_loss

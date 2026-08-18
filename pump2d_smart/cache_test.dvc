@@ -1,0 +1,6 @@
+outs:
+- md5: 43aaf05eddcd29251b3f1b54153402d2.dir
+  size: 39199751
+  nfiles: 2
+  hash: md5
+  path: cache_test
