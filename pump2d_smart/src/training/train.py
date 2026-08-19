@@ -14,8 +14,9 @@ os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
 import mlflow
 import numpy as np
 import torch
-from models.smart.smart import SMART
 from omegaconf import DictConfig, OmegaConf
+from smart.smart.models.smart.smart import SMART
+from smart.smart.utils.torch_utils import count_trainable_parameters
 from src.data.dataset import Pump2DDataset
 from src.loss.losses import CombinedLoss, RelL2Loss
 from src.loss.physics_losses import (

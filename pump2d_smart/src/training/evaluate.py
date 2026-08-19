@@ -9,7 +9,7 @@ from os.path import join as pjoin
 from typing import Any
 
 import torch
-from models.smart.smart import SMART
+from smart.smart.models.smart.smart import SMART
 from src.data.dataset import Pump2DDataset
 from src.training.config import Pump2DConfig, load_hydra_config
 from src.training.feature_manager import FeatureManager

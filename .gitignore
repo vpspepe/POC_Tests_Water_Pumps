@@ -10,3 +10,5 @@ SHAPE_Encoder/Shape_*.png
 .ipynb_checkpoints
 SHAPE_Encoder/checkpoints/shape-fm-small-v3/metadata.json
 /3DPump_FirstRun_merged.stl
+outputs/2026-07-10
+smart/
