@@ -1,4 +1,6 @@
 /smart
 /mlflow_artifacts
 /mlruns
-
+/experiments
+/cache
+/cache_test

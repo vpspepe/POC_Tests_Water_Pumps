@@ -20,30 +20,12 @@ pump2d_smart/
 │   ├── data/                      # Dataset paths, test split ratio, caching
 │   └── tracking/                  # MLflow experiment tracking settings
 ├── cache/                         # Pre-processed .npz datasets & metadata JSONs
+├── conf/                          # Modular Hydra configuration hierarchy
+├── docs/                          # In-depth architectural notes & technical reports
 ├── experiments/                   # Isolated experiment directories (<exp_name>/plots & checkpoints)
-├── results/                       # Centralized evaluation visualizations & head curves
-├── src/
-│   ├── data/
-│   │   ├── dataset.py             # PyTorch Dataset, Z-score standardization, and cache loaders
-│   │   └── utils.py               # Kennard-Stone space-filling parameter splitter
-│   ├── geometry/
-│   │   └── processor.py           # Unified boundary extractor, GPU ray-caster & SDF generator
-│   ├── loss/
-│   │   ├── losses.py              # Loss criteria (MSE, L1, RelL2Loss, CombinedLoss)
-│   │   └── physics_losses.py      # ECOTWIN Physics losses (L_mass, L_wall, L_flux, L_outlet_p)
-│   └── training/
-│       ├── calculate_metrics.py   # Regression metrics calculator (MSE, MAE, Rel L1/L2, R²)
-│       ├── calculate_pump_heads.py# Physics engine (line integrals & head equations)
-│       ├── config.py              # Structured dataclasses and Hydra config loader
-│       ├── early_stopping.py      # OOP early stopping monitor & best model saver
-│       ├── evaluate.py            # Side-by-side flow field contour evaluator
-│       ├── experiment_manager.py  # Isolated run directory & MLflow artifact manager
-│       ├── feature_manager.py     # Selective SDF feature slicer & query router
-│       ├── lr_scheduler.py        # LR scheduler factory
-│       ├── metrics.py             # Vectorized regression metrics
-│       ├── plotting.py            # Visualization library (H-Q curves, contours, loss curves)
-│       └── train.py               # Hydra trainer, optimization loop, and MLflow logger
+├── mlflow_artifacts/              # Dedicated MLflow artifact store (model weights, plots, configs)
 ├── mlflow.db                      # Local SQLite tracking database for MLflow
+├── src/                           # Source code (data, geometry, loss, training)
 ├── README.md                      # This user & CLI guide
 ├── README_architecture.md         # Comprehensive system & architectural specification
 └── RESULTS.md                     # Single master ledger tracking all experiment metrics
@@ -96,7 +78,8 @@ from src.training.config import load_hydra_config
 
 cfg = load_hydra_config(overrides=['loss=volume_mse', 'features=volume_only'])
 calculate_validation_metrics(cfg, checkpoint_path='./experiments/exp_003_hydra_volume/checkpoints/best_smart_pump2d.pt')
-evaluate_model(cfg, checkpoint_path='./experiments/exp_003_hydra_volume/checkpoints/best_smart_pump2d.pt', save_dir='./results')
+evaluate_model(cfg, checkpoint_path='./experiments/exp_003_hydra_volume/checkpoints/best_smart_pump2d.pt', save_dir='./experiments/exp_003_hydra_volume/plots')
+
 "
 ```
 

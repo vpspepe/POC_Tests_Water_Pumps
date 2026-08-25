@@ -10,42 +10,17 @@ The project is structured under [`POC_Tests/pump2d_smart/`](file:///home/vpspepe
 
 ```text
 pump2d_smart/
-├── conf/                          # Nested Hydra configuration hierarchy
-│   ├── config.yaml                # Master configuration entry point
-│   ├── model/                     # SMART complexity (smart_small.yaml, smart_base.yaml)
-│   ├── training/                  # Batch size, epochs, device, hardware limits
-│   ├── optimizer/                 # Adam, AdamW
-│   ├── lr_scheduler/              # ReduceLROnPlateau, CosineAnnealing, Exponential, None
-│   ├── early_stopping/            # Patience, delta, mode
-│   ├── features/                  # Surface prediction & selective SDF toggles
-│   ├── loss/                      # RelL2, MSE, physics-informed penalty terms
-│   ├── data/                      # Paths, test splits, caching
-│   └── tracking/                  # MLflow experiment tracking
-├── cache/                         # Default cache folder (empty, populated during training)
+├── cache/                         # Pre-processed .npz datasets & metadata JSONs
 ├── cache_test/                    # Test cache folder containing sample pre-processed data
+├── conf/                          # Nested Hydra configuration hierarchy
+├── docs/                          # In-depth architectural notes & technical reports
 ├── experiments/                   # Isolated experiment artifacts, plots, and checkpoints
-├── src/
-│   ├── data/
-│   │   ├── dataset.py             # PyTorch dataset, data normalizer, and loader
-│   │   └── utils.py               # Preprocessing utilities (Kennard-Stone)
-│   ├── geometry/
-│   │   └── processor.py           # Surface contour extractor, ray-caster & SDFs
-│   ├── loss/
-│   │   ├── losses.py              # Loss criteria (MSE, L1, RelL2Loss, CombinedLoss)
-│   │   └── physics_losses.py      # ECOTWIN Physics losses (L_mass, L_wall, L_flux, L_outlet_p)
-│   └── training/
-│       ├── calculate_metrics.py   # Validation error metrics (MSE, MAE, RelL1, RelL2, R2)
-│       ├── calculate_pump_heads.py# Physics library (line integrals, head equations)
-│       ├── config.py              # Structured dataclasses and Hydra config loader
-│       ├── early_stopping.py      # OOP early stopping monitor and best model saver
-│       ├── evaluate.py            # Matplotlib contour plotting for predictions
-│       ├── experiment_manager.py  # Isolated experiment manager and H-Q split plotter
-│       ├── feature_manager.py     # Selective SDF extraction and surface mode routing
-│       ├── lr_scheduler.py        # Factory for ReduceLROnPlateau, Cosine, Exponential
-│       ├── metrics.py             # Vectorized R2, RelL1, RelL2, MAE, MSE calculator
-│       ├── plotting.py            # Visualization library (H-Q curves, contours, loss curves)
-│       └── train.py               # MLflow training manager and fit loop
-└── README_architecture.md         # This documentation
+├── mlflow_artifacts/              # Dedicated MLflow artifact store (model weights, plots, configs)
+├── mlflow.db                      # Local SQLite tracking database for MLflow
+├── src/                           # Source code (data, geometry, loss, training)
+├── README.md                      # Quick start & user guide
+├── README_architecture.md         # Comprehensive system & architectural specification
+└── RESULTS.md                     # Single master ledger tracking all experiment metrics
 ```
 
 ---

@@ -26,7 +26,6 @@ os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
 from src.training.config import load_hydra_config
 from src.training.train import Pump2DTrainer
 
-
 EXPERIMENTS: list[dict[str, Any]] = [
     {
         "name": "exp_005_15pts_mse_only",

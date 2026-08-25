@@ -12,3 +12,8 @@ smart/
 pump2d_smart/src/training/cache
 pump2d_smart/mlflow.db
 mlruns/
+/lora_checkpoints
+outputs/
+ruff_clean.sh
+mlflow.*
+3DPump_FirstRun_merged.stl
