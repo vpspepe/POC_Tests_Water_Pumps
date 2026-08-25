@@ -16,7 +16,6 @@ import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
 from smart.smart.models.smart.smart import SMART
-from smart.smart.utils.torch_utils import count_trainable_parameters
 from src.data.dataset import Pump2DDataset
 from src.loss.losses import CombinedLoss, RelL2Loss
 from src.loss.physics_losses import (
@@ -743,25 +742,72 @@ class Pump2DTrainer:
         exp_name = getattr(self.cfg_tracking, "experiment_name", "Pump2D_Surrogate")
 
         if tracking_enabled:
-            tracking_uri = getattr(self.cfg_tracking, "tracking_uri", "file:./mlruns")
-            # If relative file or sqlite URI, anchor it automatically to the POC_Tests root directory
-            if tracking_uri.startswith("sqlite:///") and not tracking_uri.startswith(
-                "sqlite:////"
-            ):
-                rel_db_name = tracking_uri.replace("sqlite:///", "")
-                poc_root = os.path.abspath(
-                    pjoin(os.path.dirname(__file__), "..", "..", "..")
-                )
-                abs_db_path = pjoin(poc_root, rel_db_name)
+            raw_tracking_uri = getattr(
+                self.cfg_tracking, "tracking_uri", "sqlite:///mlflow.db"
+            )
+            raw_artifact_loc = getattr(
+                self.cfg_tracking, "artifact_location", "./mlflow_artifacts"
+            )
+
+            pump2d_root = os.path.abspath(
+                pjoin(os.path.dirname(__file__), "..", "..")
+            )
+
+            # 1. Resolve SQLite Tracking URI (Metrics and experiment metadata)
+            if raw_tracking_uri.startswith("sqlite:///"):
+                db_subpath = raw_tracking_uri.replace("sqlite:///", "")
+                if not os.path.isabs(db_subpath):
+                    abs_db_path = os.path.abspath(pjoin(pump2d_root, db_subpath))
+                else:
+                    abs_db_path = db_subpath
+                os.makedirs(os.path.dirname(abs_db_path), exist_ok=True)
                 tracking_uri = f"sqlite:///{abs_db_path}"
-            elif tracking_uri.startswith("file:.") or tracking_uri == "file:./mlruns":
-                poc_root = os.path.abspath(
-                    pjoin(os.path.dirname(__file__), "..", "..", "..")
+            elif raw_tracking_uri.startswith("file:"):
+                f_path = raw_tracking_uri.replace("file://", "").replace(
+                    "file:", ""
                 )
-                abs_mlruns_path = pjoin(poc_root, "mlruns")
-                tracking_uri = f"file://{abs_mlruns_path}"
+                abs_f_path = (
+                    os.path.abspath(pjoin(pump2d_root, f_path))
+                    if not os.path.isabs(f_path)
+                    else f_path
+                )
+                tracking_uri = f"file://{abs_f_path}"
+            else:
+                tracking_uri = raw_tracking_uri
+
+            # 2. Resolve Dedicated Artifact Location (Model weights, config files, figures)
+            if raw_artifact_loc.startswith("file:"):
+                art_path = raw_artifact_loc.replace("file://", "").replace(
+                    "file:", ""
+                )
+            else:
+                art_path = raw_artifact_loc
+
+            if not os.path.isabs(art_path):
+                abs_artifact_dir = os.path.abspath(pjoin(pump2d_root, art_path))
+            else:
+                abs_artifact_dir = art_path
+            os.makedirs(abs_artifact_dir, exist_ok=True)
+            artifact_location_uri = f"file://{abs_artifact_dir}"
 
             mlflow.set_tracking_uri(tracking_uri)
+
+            # Ensure experiment is created with dedicated artifact location
+            try:
+                client = mlflow.tracking.MlflowClient(tracking_uri=tracking_uri)
+                experiment = client.get_experiment_by_name(exp_name)
+                if experiment is None:
+                    client.create_experiment(
+                        name=exp_name,
+                        artifact_location=artifact_location_uri,
+                    )
+                else:
+                    print(
+                        f"MLflow tracking on experiment '{exp_name}' (Artifacts at: {experiment.artifact_location})"
+                    )
+            except Exception as e:
+                print(f"Notice: MLflow experiment setup: {e}")
+
             mlflow.set_experiment(exp_name)
 
         run_context = (

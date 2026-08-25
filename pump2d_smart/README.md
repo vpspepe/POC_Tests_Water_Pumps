@@ -80,9 +80,10 @@ trainer.fit()
 To browse training loss curves, compare parameters across runs, and inspect generated figures:
 
 ```bash
-uv run mlflow ui --backend-store-uri sqlite:///mlflow.db
+uv run mlflow ui --backend-store-uri sqlite:///mlflow.db --default-artifact-root ./mlflow_artifacts
 ```
 Open **`http://localhost:5000`** in your browser.
+
 
 ### C. Evaluate Trained Checkpoint
 To run inference on unseen validation cases, compute error tables, and generate contour plots:

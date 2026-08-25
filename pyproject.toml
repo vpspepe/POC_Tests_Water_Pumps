@@ -41,6 +41,7 @@ dependencies = [
   "dvc>=3.67.1",
   "dvc-webdav>=3.0.1",
   "ruff>=0.16.3",
+  "dagshub>=0.7.1",
 ]
 
 [[tool.uv.index]]

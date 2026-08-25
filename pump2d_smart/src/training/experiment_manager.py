@@ -67,8 +67,13 @@ class ExperimentManager:
             if os.path.exists(config_json):
                 mlflow.log_artifact(config_json, artifact_path="config")
 
+            hydra_yaml = pjoin(self.exp_dir, "hydra_config.yaml")
+            if os.path.exists(hydra_yaml):
+                mlflow.log_artifact(hydra_yaml, artifact_path="config")
+
             if best_checkpoint_path and os.path.exists(best_checkpoint_path):
                 mlflow.log_artifact(best_checkpoint_path, artifact_path="checkpoints")
                 print(f"Logged best checkpoint '{best_checkpoint_path}' to MLflow.")
         except Exception as e:
             print(f"Notice: MLflow artifact logging encountered: {e}")
+

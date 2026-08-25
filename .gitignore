@@ -1,14 +1,14 @@
 __pycache__/
 *.lock
-/mlruns
 scratch
 .env
 SHAPE_Encoder/.ipynb_checkpoints
 SHAPE_Encoder/shape_encoder_report.pdf
 SHAPE_Encoder/Shape_*.png
-/lora_checkpoints
 .ipynb_checkpoints
 SHAPE_Encoder/checkpoints/shape-fm-small-v3/metadata.json
-/3DPump_FirstRun_merged.stl
 outputs/2026-07-10
 smart/
+pump2d_smart/src/training/cache
+pump2d_smart/mlflow.db
+mlruns/

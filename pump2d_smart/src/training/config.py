@@ -129,11 +129,11 @@ class TrackingConfig:
 
     enabled: bool = True
     experiment_name: str = "Pump2D_SMART_Surrogate"
-    tracking_uri: str = (
-        "file:///home/vpspepe/Documents/TUD/HiWi/Ecotwin/POC_Tests/mlruns"
-    )
+    tracking_uri: str = "sqlite:///mlflow.db"
+    artifact_location: str = "./mlflow_artifacts"
     log_model_artifacts: bool = True
     log_config_yaml: bool = True
+
 
 
 @dataclass
