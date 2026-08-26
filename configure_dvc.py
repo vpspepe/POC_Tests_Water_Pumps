@@ -13,7 +13,7 @@ def main():
 
     user = os.getenv("HESSENBOX_USER")
     password = os.getenv("HESSENBOX_PASSWORD")
-    dir = os.getenv("HESSENBOX_DIR", "EcoTwin/dvc_poc_tests/")
+    dir = os.getenv("HESSENBOX_DIR", "EcoTwin/dvc/")
 
     if not user or not password:
         print(
