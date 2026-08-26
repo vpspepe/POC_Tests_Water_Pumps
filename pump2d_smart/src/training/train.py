@@ -266,12 +266,16 @@ class Pump2DTrainer:
             )
         )
         w_wall = float(getattr(cfg_phys, "wall_bc_weight", 0.0))
+        scaling = str(getattr(cfg_phys, "scaling", "relative"))
+        self.physics_warmup_epochs = int(getattr(cfg_phys, "warmup_epochs", 20))
+        self.physics_rampup_epochs = int(getattr(cfg_phys, "rampup_epochs", 30))
 
         self.physics_loss = ECOTWINPhysicsLoss(
             weight_mass=w_mass,
             weight_wall=w_wall,
             weight_flux=w_flux,
             weight_outlet_p=w_outlet_p,
+            scaling=scaling,
         )
         self.use_physics = (
             w_mass > 0.0 or w_flux > 0.0 or w_outlet_p > 0.0 or w_wall > 0.0
@@ -279,8 +283,9 @@ class Pump2DTrainer:
 
         if self.use_physics:
             print(
-                f"Physics-Informed Loss Enabled | Weights: "
-                f"Mass={w_mass:.4f}, Wall={w_wall:.4f}, Flux={w_flux:.4f}, OutletP={w_outlet_p:.4f}"
+                f"Physics-Informed Loss Enabled | Scaling: {scaling} | Weights: "
+                f"Mass={w_mass:.4f}, Wall={w_wall:.4f}, Flux={w_flux:.4f}, OutletP={w_outlet_p:.4f} | "
+                f"Warmup={self.physics_warmup_epochs} eps, Rampup={self.physics_rampup_epochs} eps"
             )
         else:
             print("Physics-Informed Loss Disabled (Pure Data-Driven MSE)")
@@ -316,18 +321,41 @@ class Pump2DTrainer:
             100000.0 - self.train_dataset.mean_vol_data[0]
         ) / self.train_dataset.std_vol_data[0]
 
+    def _get_physics_curriculum_gamma(self, epoch: int) -> float:
+        """Calculates linear warmup curriculum factor gamma(t) in [0.0, 1.0]."""
+        if not self.use_physics:
+            return 0.0
+        if self.physics_warmup_epochs <= 0 and self.physics_rampup_epochs <= 0:
+            return 1.0
+        if epoch <= self.physics_warmup_epochs:
+            return 0.0
+        if self.physics_rampup_epochs <= 0:
+            return 1.0
+        progress = (epoch - self.physics_warmup_epochs) / float(
+            self.physics_rampup_epochs
+        )
+        return float(np.clip(progress, 0.0, 1.0))
+
     def _compute_physics_loss(
-        self, pred_vol: torch.Tensor, vol_coords: torch.Tensor
+        self,
+        pred_vol: torch.Tensor,
+        vol_coords: torch.Tensor,
+        data_loss: torch.Tensor | None = None,
+        epoch: int = 1,
     ) -> tuple[torch.Tensor, dict[str, float]]:
-        """Evaluates ECOTWINPhysicsLoss for the batch.
+        """Evaluates ECOTWINPhysicsLoss with dynamic scaling and curriculum weighting.
 
         Args:
             pred_vol: Predicted volume field tensor [p, vx, vy].
             vol_coords: Collocation spatial coordinates (with requires_grad=True).
+            data_loss: Base Data MSE loss for relative scale normalization.
+            epoch: Current training epoch for curriculum warmup.
 
         Returns:
             Tuple of [weighted_scalar_physics_loss, metrics_dict].
         """
+        gamma = self._get_physics_curriculum_gamma(epoch)
+
         # Node velocities at boundaries
         u_in_nodes = pred_vol[0, self.idx_in_tensor, 1:3]
         u_out_nodes = pred_vol[0, self.idx_out_tensor, 1:3]
@@ -355,7 +383,10 @@ class Pump2DTrainer:
             q_in=0.0,
             outlet_p_pred=p_out_pred,
             outlet_p_target=self.target_p_out_norm,
+            data_loss=data_loss,
+            curriculum_gamma=gamma,
         )
+
 
     def _init_experiment_tracking(self) -> None:
         """Sets up isolated experiment directory structure and checkpoint paths."""
@@ -448,8 +479,11 @@ class Pump2DTrainer:
 
         return pred_surf, pred_vol, surf_d, vol_d, vol_c
 
-    def train_epoch(self) -> tuple[float, dict[str, float]]:
+    def train_epoch(self, epoch: int = 1) -> tuple[float, dict[str, float]]:
         """Trains the model for one epoch and evaluates loss component gradient norms.
+
+        Args:
+            epoch: Current training epoch number.
 
         Returns:
             Tuple of [mean_epoch_loss, gradient_norms_dict].
@@ -471,20 +505,26 @@ class Pump2DTrainer:
             )
 
             if self.use_physics:
-                phys_loss, _ = self._compute_physics_loss(pred_vol, vol_c)
+                phys_loss, phys_metrics = self._compute_physics_loss(
+                    pred_vol, vol_c, data_loss=loss, epoch=epoch
+                )
                 loss = loss + phys_loss
+                if batch_idx == len(self.train_loader) - 1:
+                    grad_norms.update(phys_metrics)
 
             # Compute component gradient norms on last batch of epoch via loss_fn
             if batch_idx == len(self.train_loader) - 1:
-                grad_norms = self.loss_fn.compute_gradient_norms(
+                base_grad_norms = self.loss_fn.compute_gradient_norms(
                     loss_components, self.model.parameters()
                 )
+                grad_norms.update(base_grad_norms)
 
             loss.backward()
             self.optimizer.step()
             epoch_loss += loss.item()
 
         return epoch_loss / len(self.train_loader), grad_norms
+
 
     @torch.no_grad()
     def validate(self) -> dict[str, float]:
@@ -824,7 +864,7 @@ class Pump2DTrainer:
 
             try:
                 for epoch in range(self.start_epoch, total_target_epoch + 1):
-                    train_loss, grad_norms = self.train_epoch()
+                    train_loss, grad_norms = self.train_epoch(epoch=epoch)
                     val_metrics = self.validate()
 
                     val_loss = val_metrics["val_loss"]

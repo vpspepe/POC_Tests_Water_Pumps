@@ -91,11 +91,16 @@ class FeaturesConfig:
 
 @dataclass
 class PhysicsTermsConfig:
-    """Weights for physics-informed penalty terms in loss."""
+    """Weights and scaling parameters for physics-informed penalty terms in loss."""
 
     mass_weight: float = 0.0
     flux_weight: float = 0.0
     outlet_p_weight: float = 0.0
+    wall_weight: float = 0.0
+    scaling: str = "relative"  # "relative" (dynamic balance to data MSE) or "fixed" (unscaled)
+    warmup_epochs: int = 20
+    rampup_epochs: int = 30
+
 
 
 @dataclass

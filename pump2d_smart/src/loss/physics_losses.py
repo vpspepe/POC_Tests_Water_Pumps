@@ -165,20 +165,23 @@ class ECOTWINPhysicsLoss(nn.Module):
         weight_wall: float = 0.0,
         weight_flux: float = 0.0,
         weight_outlet_p: float = 0.0,
+        scaling: str = "relative",
     ) -> None:
-        """Initializes ECOTWINPhysicsLoss with loss term weights.
+        """Initializes ECOTWINPhysicsLoss with loss term weights and scaling mode.
 
         Args:
             weight_mass: Weight for divergence-free mass conservation (lambda_mass).
             weight_wall: Weight for wall boundary condition (lambda_BC_wall).
             weight_flux: Weight for global flux continuity (lambda_flux).
             weight_outlet_p: Weight for outlet pressure anchoring (lambda_BC_out).
+            scaling: "relative" (dynamically balances against Data MSE) or "fixed" (unscaled).
         """
         super().__init__()
         self.weight_mass = weight_mass
         self.weight_wall = weight_wall
         self.weight_flux = weight_flux
         self.weight_outlet_p = weight_outlet_p
+        self.scaling = scaling
 
     def forward(
         self,
@@ -198,16 +201,31 @@ class ECOTWINPhysicsLoss(nn.Module):
         q_in: float | torch.Tensor = 0.0,
         outlet_p_pred: torch.Tensor | None = None,
         outlet_p_target: float | torch.Tensor = 0.0,
+        data_loss: torch.Tensor | None = None,
+        curriculum_gamma: float = 1.0,
     ) -> tuple[torch.Tensor, dict[str, float]]:
-        """Computes weighted composite physics loss and returns breakdown.
+        """Computes scaled composite physics loss with curriculum weighting.
 
         Returns:
             Tuple of [total_physics_loss_tensor, metrics_dictionary].
         """
-        total_loss = torch.tensor(
-            0.0, device=vol_coords.device if vol_coords is not None else None
-        )
-        metrics: dict[str, float] = {}
+        device = vol_coords.device if vol_coords is not None else None
+        total_loss = torch.tensor(0.0, device=device)
+        metrics: dict[str, float] = {
+            "physics_curriculum_gamma": float(curriculum_gamma)
+        }
+
+        def _scale_term(term_loss: torch.Tensor, weight: float, name: str) -> torch.Tensor:
+            if self.scaling == "relative" and data_loss is not None:
+                # Dynamic scale: s = data_loss / (term_loss + eps)
+                scale = data_loss.detach() / (term_loss.detach() + 1e-7)
+                scale = torch.clamp(scale, min=1e-6, max=1e6)
+                weighted = weight * scale * term_loss
+            else:
+                weighted = weight * term_loss
+            metrics[f"loss_physics_{name}_raw"] = float(term_loss.item())
+            metrics[f"loss_physics_{name}"] = float(weighted.item())
+            return weighted
 
         # 1. Divergence-Free Continuity Loss (L_mass)
         if (
@@ -216,9 +234,9 @@ class ECOTWINPhysicsLoss(nn.Module):
             and vol_u_y is not None
             and vol_coords is not None
         ):
-            l_mass = divergence_free_loss(vol_u_x, vol_u_y, vol_coords)
-            total_loss = total_loss + self.weight_mass * l_mass
-            metrics["loss_physics_mass"] = float(l_mass.item())
+            l_mass_raw = divergence_free_loss(vol_u_x, vol_u_y, vol_coords)
+            l_mass = _scale_term(l_mass_raw, self.weight_mass, "mass")
+            total_loss = total_loss + l_mass
 
         # 2. Wall Boundary Condition Loss (L_BC_wall)
         if (
@@ -227,9 +245,9 @@ class ECOTWINPhysicsLoss(nn.Module):
             and wall_coords is not None
             and wall_mrf_mask is not None
         ):
-            l_wall = wall_bc_loss(wall_u_pred, wall_coords, wall_mrf_mask, omega)
-            total_loss = total_loss + self.weight_wall * l_wall
-            metrics["loss_physics_wall_bc"] = float(l_wall.item())
+            l_wall_raw = wall_bc_loss(wall_u_pred, wall_coords, wall_mrf_mask, omega)
+            l_wall = _scale_term(l_wall_raw, self.weight_wall, "wall_bc")
+            total_loss = total_loss + l_wall
 
         # 3. Global Mass Flux Continuity Loss (L_flux)
         if (
@@ -241,7 +259,7 @@ class ECOTWINPhysicsLoss(nn.Module):
             and outlet_normals is not None
             and outlet_weights is not None
         ):
-            l_flux, _ = flux_continuity_loss(
+            l_flux_raw, _ = flux_continuity_loss(
                 inlet_u_pred,
                 inlet_normals,
                 inlet_weights,
@@ -250,13 +268,18 @@ class ECOTWINPhysicsLoss(nn.Module):
                 outlet_weights,
                 q_in,
             )
-            total_loss = total_loss + self.weight_flux * l_flux
-            metrics["loss_physics_flux"] = float(l_flux.item())
+            l_flux = _scale_term(l_flux_raw, self.weight_flux, "flux")
+            total_loss = total_loss + l_flux
 
         # 4. Outlet Pressure Boundary Condition Loss (L_BC_out)
         if self.weight_outlet_p > 0.0 and outlet_p_pred is not None:
-            l_out_p = outlet_pressure_loss(outlet_p_pred, outlet_p_target)
-            total_loss = total_loss + self.weight_outlet_p * l_out_p
-            metrics["loss_physics_outlet_p"] = float(l_out_p.item())
+            l_out_p_raw = outlet_pressure_loss(outlet_p_pred, outlet_p_target)
+            l_out_p = _scale_term(l_out_p_raw, self.weight_outlet_p, "outlet_p")
+            total_loss = total_loss + l_out_p
+
+        # Apply curriculum warmup multiplier
+        total_loss = curriculum_gamma * total_loss
+        metrics["loss_physics_total"] = float(total_loss.item())
 
         return total_loss, metrics
+

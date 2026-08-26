@@ -9,3 +9,8 @@ physics_terms:
   mass_weight: 0.01
   flux_weight: 0.01
   outlet_p_weight: 0.01
+  wall_weight: 0.0
+  scaling: "relative"
+  warmup_epochs: 20
+  rampup_epochs: 30
+

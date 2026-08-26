@@ -89,19 +89,12 @@ def plot_hq_data_split(
         str: Filepath where plot was saved.
     """
     try:
-        comsol_dir = os.path.dirname(dataset.main_vtu_path)
-        in_mesh = pv.read(pjoin(comsol_dir, "Pump2D_MRFStudy_finer_Inlet.vtu"))
-        out_mesh = pv.read(pjoin(comsol_dir, "Pump2D_MRFStudy_finer_Outlet.vtu"))
-
-        pts_in = np.asarray(in_mesh.points, dtype=float)[:, :2]
-        pts_out = np.asarray(out_mesh.points, dtype=float)[:, :2]
-        e_in = extract_unique_edges(in_mesh)
-        e_out = extract_unique_edges(out_mesh)
-
-        vol_coords = dataset.samples[0]["volume_coords"]
-        tree = KDTree(vol_coords)
-        _, idx_in = tree.query(pts_in)
-        _, idx_out = tree.query(pts_out)
+        pts_in = dataset.inlet_coords
+        pts_out = dataset.outlet_coords
+        e_in = dataset.inlet_edges
+        e_out = dataset.outlet_edges
+        idx_in = dataset.idx_in
+        idx_out = dataset.idx_out
 
         train_set = set(dataset.train_indices)
         rpm_groups: dict[float, list[tuple[float, float, bool]]] = {}
@@ -385,19 +378,12 @@ def plot_hq_head_predictions(
     Returns:
         Tuple of [save_path, head_metrics_dictionary].
     """
-    comsol_dir = os.path.dirname(dataset.main_vtu_path)
-    in_mesh = pv.read(pjoin(comsol_dir, "Pump2D_MRFStudy_finer_Inlet.vtu"))
-    out_mesh = pv.read(pjoin(comsol_dir, "Pump2D_MRFStudy_finer_Outlet.vtu"))
-
-    pts_in = np.asarray(in_mesh.points, dtype=float)[:, :2]
-    pts_out = np.asarray(out_mesh.points, dtype=float)[:, :2]
-    e_in = extract_unique_edges(in_mesh)
-    e_out = extract_unique_edges(out_mesh)
-
-    vol_coords = dataset.samples[0]["volume_coords"]
-    tree = KDTree(vol_coords)
-    _, idx_in = tree.query(pts_in)
-    _, idx_out = tree.query(pts_out)
+    pts_in = dataset.inlet_coords
+    pts_out = dataset.outlet_coords
+    e_in = dataset.inlet_edges
+    e_out = dataset.outlet_edges
+    idx_in = dataset.idx_in
+    idx_out = dataset.idx_out
 
     mean_vol = dataset.mean_vol_data
     std_vol = dataset.std_vol_data
