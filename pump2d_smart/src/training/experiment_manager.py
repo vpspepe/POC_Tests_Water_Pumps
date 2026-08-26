@@ -1,24 +1,20 @@
-"""Experiment Manager Module for Organized Surrogate Modeling Experiments.
+"""Experiment Manager Module for Managing Checkpoint Locations and DVC Pointers.
 
 Responsible exclusively for:
-1. Managing isolated experiment directory structures under `pump2d_smart/experiments/<exp_name>/`.
-2. Persisting experiment configuration metadata (JSON).
-3. Logging experiment artifacts (plots, checkpoints, configurations) to MLflow.
+1. Managing checkpoint directory under `pump2d_smart/experiments/<exp_name>/checkpoints/`.
+2. Providing run-specific model filenames (`model_{run_id}.pt`) and DVC pointer names (`model_{run_id}.pt.dvc`).
 """
 
-import json
 import os
 from os.path import join as pjoin
 from typing import Any
 
-import mlflow
-
 
 class ExperimentManager:
-    """Object-Oriented Manager for isolated experiment directories, configuration, and MLflow artifacts."""
+    """Object-Oriented Manager for experiment checkpoint directories and DVC pointers."""
 
     def __init__(self, config: Any) -> None:
-        """Initializes the experiment manager and creates isolated directories.
+        """Initializes the experiment manager and creates the checkpoints directory.
 
         Args:
             config: Pump2DConfig dataclass or Hydra DictConfig containing exp_name and paths.
@@ -31,49 +27,51 @@ class ExperimentManager:
 
         self.exp_dir: str = pjoin(experiments_base, self.exp_name)
         self.checkpoints_dir: str = pjoin(self.exp_dir, "checkpoints")
-        self.plots_dir: str = pjoin(self.exp_dir, "plots")
 
-        # Ensure directories exist
+        # Ensure checkpoints directory exists locally
         os.makedirs(self.checkpoints_dir, exist_ok=True)
-        os.makedirs(self.plots_dir, exist_ok=True)
 
-    def save_config(self, config_dict: dict[str, Any]) -> str:
-        """Saves experiment configuration metadata to JSON.
+    def get_model_checkpoint_info(self, run_id: str) -> tuple[str, str, str]:
+        """Returns the local checkpoint filepath, model filename, and DVC pointer filename.
 
         Args:
-            config_dict: Dictionary of configuration parameters.
+            run_id: MLflow run identifier or fallback experiment name.
 
         Returns:
-            str: Path to saved JSON file.
+            Tuple of [full_checkpoint_path, model_filename, dvc_pointer_filename].
         """
-        config_file = pjoin(self.checkpoints_dir, "config.json")
-        with open(config_file, "w") as f:
-            json.dump(config_dict, f, indent=4, default=str)
-        print(f"Saved experiment configuration to: {config_file}")
-        return config_file
+        model_filename = f"model_{run_id}.pt"
+        dvc_pointer = f"{model_filename}.dvc"
+        checkpoint_path = pjoin(self.checkpoints_dir, model_filename)
+        return checkpoint_path, model_filename, dvc_pointer
 
-    def log_artifacts_to_mlflow(self, best_checkpoint_path: str = "") -> None:
-        """Logs all generated figures, JSON configs, and best model weights to MLflow.
+    @staticmethod
+    def get_model_info_from_run(
+        run_id: str, experiments_base: str = "./experiments"
+    ) -> tuple[str, str, str]:
+        """Retrieves checkpoint path, model filename, and DVC pointer directly from MLflow run tags.
 
         Args:
-            best_checkpoint_path: Path to best checkpoint weights file.
+            run_id: MLflow run ID.
+            experiments_base: Base directory where experiments are stored.
+
+        Returns:
+            Tuple of [full_checkpoint_path, model_filename, dvc_pointer_filename].
         """
-        try:
-            if os.path.exists(self.plots_dir):
-                mlflow.log_artifacts(self.plots_dir, artifact_path="plots")
-                print(f"Logged all plots from '{self.plots_dir}' to MLflow.")
+        import mlflow
 
-            config_json = pjoin(self.checkpoints_dir, "config.json")
-            if os.path.exists(config_json):
-                mlflow.log_artifact(config_json, artifact_path="config")
+        run = mlflow.get_run(run_id)
+        tags = run.data.tags
 
-            hydra_yaml = pjoin(self.exp_dir, "hydra_config.yaml")
-            if os.path.exists(hydra_yaml):
-                mlflow.log_artifact(hydra_yaml, artifact_path="config")
+        model_filename = tags.get("model_filename", f"model_{run_id}.pt")
+        dvc_pointer = tags.get("dvc_pointer", f"{model_filename}.dvc")
+        exp_name = tags.get(
+            "mlflow.runName", getattr(run.info, "run_name", "exp_default")
+        )
 
-            if best_checkpoint_path and os.path.exists(best_checkpoint_path):
-                mlflow.log_artifact(best_checkpoint_path, artifact_path="checkpoints")
-                print(f"Logged best checkpoint '{best_checkpoint_path}' to MLflow.")
-        except Exception as e:
-            print(f"Notice: MLflow artifact logging encountered: {e}")
+        checkpoint_path = pjoin(
+            experiments_base, exp_name, "checkpoints", model_filename
+        )
+        return checkpoint_path, model_filename, dvc_pointer
+
 

@@ -6,18 +6,18 @@ and comprehensive MLflow metric logging.
 """
 
 import os
+import tempfile
 from os.path import join as pjoin
 from typing import Any
 
-os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
-
+import dagshub
 import mlflow
 import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
 from smart.smart.models.smart.smart import SMART
 from src.data.dataset import Pump2DDataset
-from src.loss.losses import CombinedLoss, RelL2Loss
+from src.loss.losses import CombinedLoss
 from src.loss.physics_losses import (
     ECOTWINPhysicsLoss,
 )
@@ -34,8 +34,6 @@ from src.training.plotting import (
     plot_loss_curves,
 )
 from torch.utils.data import DataLoader
-
-os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
 
 
 class Pump2DTrainer:
@@ -77,8 +75,9 @@ class Pump2DTrainer:
         # 5. Early stopping monitor
         self._init_early_stopping()
 
-        # 6. Loss function
+        # 6. Loss function and physics penalties
         self._init_loss_function()
+        self._init_physics_loss()
 
         # 7. Experiment directories & tracking
         self._init_experiment_tracking()
@@ -234,14 +233,8 @@ class Pump2DTrainer:
         )
 
     def _init_loss_function(self) -> None:
-        """Builds the composite loss function and initializes ECOTWINPhysicsLoss."""
-        loss_type = str(getattr(self.cfg_loss, "type", "mse")).lower()
-        if loss_type == "l1":
-            base_loss = torch.nn.L1Loss(reduction="mean")
-        elif loss_type == "rel_l2":
-            base_loss = RelL2Loss(dim=-2, reduction="sum", reduce_all=True)
-        else:
-            base_loss = torch.nn.MSELoss(reduction="mean")
+        """Builds the composite field-level MSE loss function."""
+        base_loss = torch.nn.MSELoss(reduction="mean")
 
         fields = {
             "surface": ["pressure"]
@@ -253,8 +246,10 @@ class Pump2DTrainer:
         }
         self.loss_fn = CombinedLoss(base_loss, fields)
 
-        # 2. Physics-Informed Loss Manager
+    def _init_physics_loss(self) -> None:
+        """Initializes ECOTWINPhysicsLoss weights, active status, and pre-allocated boundary tensors."""
         cfg_phys = getattr(self.cfg_loss, "physics_terms", None)
+
         w_mass = float(
             getattr(
                 cfg_phys, "mass_weight", getattr(cfg_phys, "continuity_weight", 0.0)
@@ -282,7 +277,15 @@ class Pump2DTrainer:
             w_mass > 0.0 or w_flux > 0.0 or w_outlet_p > 0.0 or w_wall > 0.0
         )
 
-        # 3. Pre-allocated boundary tensors on target device
+        if self.use_physics:
+            print(
+                f"Physics-Informed Loss Enabled | Weights: "
+                f"Mass={w_mass:.4f}, Wall={w_wall:.4f}, Flux={w_flux:.4f}, OutletP={w_outlet_p:.4f}"
+            )
+        else:
+            print("Physics-Informed Loss Disabled (Pure Data-Driven MSE)")
+
+        # Pre-allocate boundary tensors on target device
         self.idx_in_tensor = torch.as_tensor(
             self.train_dataset.idx_in, device=self.device
         )
@@ -308,7 +311,7 @@ class Pump2DTrainer:
             self.train_dataset.outlet_edges, dtype=torch.int64, device=self.device
         )
 
-        # Target normalized outlet pressure (100 kPa)
+        # Target normalized outlet pressure (100 kPa atmospheric reference)
         self.target_p_out_norm = (
             100000.0 - self.train_dataset.mean_vol_data[0]
         ) / self.train_dataset.std_vol_data[0]
@@ -358,9 +361,8 @@ class Pump2DTrainer:
         """Sets up isolated experiment directory structure and checkpoint paths."""
         self.exp_manager = ExperimentManager(self.config)
         self.save_model_dir = self.exp_manager.checkpoints_dir
-        self.plots_dir = self.exp_manager.plots_dir
-
         self.best_checkpoint_path = pjoin(self.save_model_dir, "best_smart_pump2d.pt")
+
 
     def _resume_checkpoint_if_specified(self) -> None:
         """Resumes weights, epoch, score, and optimizer state from checkpoint if requested."""
@@ -590,10 +592,10 @@ class Pump2DTrainer:
     # =========================================================================
 
     def _persist_and_export_config(self) -> tuple[dict[str, Any], str]:
-        """Exports standalone YAML and JSON configurations to experiment folder.
+        """Prepares configuration dictionary and YAML string for MLflow logging.
 
         Returns:
-            Tuple of [config_dictionary, hydra_yaml_path].
+            Tuple of [config_dictionary, yaml_content_string].
         """
         if isinstance(self.config, DictConfig):
             config_dict = OmegaConf.to_container(self.config, resolve=True)
@@ -609,15 +611,8 @@ class Pump2DTrainer:
                 )
                 yaml_content = str(config_dict)
 
-        hydra_yaml_path = pjoin(self.exp_manager.exp_dir, "hydra_config.yaml")
-        try:
-            with open(hydra_yaml_path, "w") as f:
-                f.write(yaml_content)
-        except Exception as e:
-            print(f"Notice: Could not write hydra_config.yaml ({e})")
+        return config_dict, yaml_content
 
-        self.exp_manager.save_config(config_dict)
-        return config_dict, hydra_yaml_path
 
     def _flatten_config_for_mlflow(
         self, d: dict[str, Any], parent_key: str = "", sep: str = "."
@@ -677,21 +672,13 @@ class Pump2DTrainer:
         val_losses: list[float],
         tracking_enabled: bool,
     ) -> None:
-        """Generates loss curves, contour comparisons, H-Q performance curves, and logs MLflow artifacts."""
-        print("\nGenerating final evaluation figures in experiment folder...")
+        """Generates loss curves, contour comparisons, H-Q performance curves, and logs directly to MLflow."""
+        print("\nGenerating final evaluation figures and logging to MLflow...")
         try:
-            # 1. Loss progression curve
-            plot_loss_curves(
-                train_losses,
-                val_losses,
-                save_path=pjoin(self.plots_dir, "loss_curve.png"),
-                exp_name=self.exp_name,
-            )
-
-            # 2. Restore best weights for evaluation
+            # 1. Restore best weights for evaluation
             if os.path.exists(self.best_checkpoint_path):
                 print(
-                    f"Loading best model checkpoint for final evaluation: {self.best_checkpoint_path}"
+                    f"Loading best model checkpoint for evaluation: {self.best_checkpoint_path}"
                 )
                 best_ckpt = torch.load(
                     self.best_checkpoint_path, map_location=self.device
@@ -702,150 +689,137 @@ class Pump2DTrainer:
             best_val_raw = self.validate()
             best_final_metrics = {f"best_val_{k}": v for k, v in best_val_raw.items()}
 
-            # 3. Flow field prediction contours (Pressure, Vx, Vy, VelMag)
-            plot_field_contours(
-                self.test_dataset,
-                self.model,
-                self.feature_manager,
-                self.device,
-                save_dir=self.plots_dir,
-                sample_idx=0,
-            )
+            with tempfile.TemporaryDirectory() as tmp_plots_dir:
+                # 2. Loss progression curve
+                plot_loss_curves(
+                    train_losses,
+                    val_losses,
+                    save_path=pjoin(tmp_plots_dir, "loss_curve.png"),
+                    exp_name=self.exp_name,
+                )
 
-            # 4. H-Q Pump head performance curves
-            _, head_metrics = plot_hq_head_predictions(
-                self.train_dataset,
-                self.model,
-                self.feature_manager,
-                self.device,
-                save_path=pjoin(self.plots_dir, "eval_pump_head_curves.png"),
-                exp_name=self.exp_name,
-            )
-            print(
-                f"Best Model Validation Head MAE: {head_metrics['val_Head_MAE_m']:.4f} m | "
-                f"Rel Error: {head_metrics['val_Head_Rel_Error_pct']:.2f}%"
-            )
+                # 3. Flow field prediction contours (Pressure, Vx, Vy, VelMag)
+                plot_field_contours(
+                    self.test_dataset,
+                    self.model,
+                    self.feature_manager,
+                    self.device,
+                    save_dir=tmp_plots_dir,
+                    sample_idx=0,
+                )
 
-            # 5. Log all figures, best final metrics, and model checkpoint to MLflow
-            if tracking_enabled:
-                mlflow.log_metrics(best_final_metrics)
-                mlflow.log_metrics(head_metrics)
-                self.exp_manager.log_artifacts_to_mlflow(self.best_checkpoint_path)
+                # 4. H-Q Pump head performance curves
+                _, head_metrics = plot_hq_head_predictions(
+                    self.train_dataset,
+                    self.model,
+                    self.feature_manager,
+                    self.device,
+                    save_path=pjoin(tmp_plots_dir, "eval_pump_head_curves.png"),
+                    exp_name=self.exp_name,
+                )
+                print(
+                    f"Best Model Validation Head MAE: {head_metrics['val_Head_MAE_m']:.4f} m | "
+                    f"Rel Error: {head_metrics['val_Head_Rel_Error_pct']:.2f}%"
+                )
+
+                # 5. Log all figures and metrics to MLflow (no local image files left on disk)
+                if tracking_enabled:
+                    mlflow.log_metrics(best_final_metrics)
+                    mlflow.log_metrics(head_metrics)
+                    mlflow.log_artifacts(tmp_plots_dir, artifact_path="plots")
+                    print("All evaluation plots logged to MLflow.")
 
         except Exception as e:
             print(f"Notice: Error generating post-training figures ({e})")
+
+    def _setup_remote_tracking(self) -> None:
+        """Initializes DAGsHub remote MLflow tracking."""
+        repo_owner = getattr(self.cfg_tracking, "repo_owner", "victor101pepe")
+        repo_name = getattr(self.cfg_tracking, "repo_name", "POC_Tests_Water_Pumps")
+        dagshub.init(repo_owner=repo_owner, repo_name=repo_name, mlflow=True)
+
+    def _setup_local_tracking(self) -> None:
+        """Connects directly to local MLflow tracking URI."""
+        uri = getattr(self.cfg_tracking, "tracking_uri", "sqlite:///mlflow.db")
+        mlflow.set_tracking_uri(uri)
+
+    def _init_tracking(self) -> None:
+        """Sets up either remote DAGsHub or local MLflow tracking."""
+        target = getattr(self.cfg_tracking, "target", "remote")
+        if target == "remote":
+            self._setup_remote_tracking()
+        else:
+            self._setup_local_tracking()
+
+        exp_name = getattr(
+            self.cfg_tracking, "experiment_name", "Pump2D_SMART_Surrogate"
+        )
+        mlflow.set_experiment(exp_name)
 
     def fit(self) -> None:
         """Executes full training epochs, tracks MLflow metrics, and early stops."""
         epochs = int(getattr(self.cfg_training, "epochs", 50))
         tracking_enabled = bool(getattr(self.cfg_tracking, "enabled", True))
-        exp_name = getattr(self.cfg_tracking, "experiment_name", "Pump2D_Surrogate")
 
         if tracking_enabled:
-            raw_tracking_uri = getattr(
-                self.cfg_tracking, "tracking_uri", "sqlite:///mlflow.db"
-            )
-            raw_artifact_loc = getattr(
-                self.cfg_tracking, "artifact_location", "./mlflow_artifacts"
-            )
-
-            pump2d_root = os.path.abspath(
-                pjoin(os.path.dirname(__file__), "..", "..")
-            )
-
-            # 1. Resolve SQLite Tracking URI (Metrics and experiment metadata)
-            if raw_tracking_uri.startswith("sqlite:///"):
-                db_subpath = raw_tracking_uri.replace("sqlite:///", "")
-                if not os.path.isabs(db_subpath):
-                    abs_db_path = os.path.abspath(pjoin(pump2d_root, db_subpath))
-                else:
-                    abs_db_path = db_subpath
-                os.makedirs(os.path.dirname(abs_db_path), exist_ok=True)
-                tracking_uri = f"sqlite:///{abs_db_path}"
-            elif raw_tracking_uri.startswith("file:"):
-                f_path = raw_tracking_uri.replace("file://", "").replace(
-                    "file:", ""
-                )
-                abs_f_path = (
-                    os.path.abspath(pjoin(pump2d_root, f_path))
-                    if not os.path.isabs(f_path)
-                    else f_path
-                )
-                tracking_uri = f"file://{abs_f_path}"
-            else:
-                tracking_uri = raw_tracking_uri
-
-            # 2. Resolve Dedicated Artifact Location (Model weights, config files, figures)
-            if raw_artifact_loc.startswith("file:"):
-                art_path = raw_artifact_loc.replace("file://", "").replace(
-                    "file:", ""
-                )
-            else:
-                art_path = raw_artifact_loc
-
-            if not os.path.isabs(art_path):
-                abs_artifact_dir = os.path.abspath(pjoin(pump2d_root, art_path))
-            else:
-                abs_artifact_dir = art_path
-            os.makedirs(abs_artifact_dir, exist_ok=True)
-            artifact_location_uri = f"file://{abs_artifact_dir}"
-
-            mlflow.set_tracking_uri(tracking_uri)
-
-            # Ensure experiment is created with dedicated artifact location
-            try:
-                client = mlflow.tracking.MlflowClient(tracking_uri=tracking_uri)
-                experiment = client.get_experiment_by_name(exp_name)
-                if experiment is None:
-                    client.create_experiment(
-                        name=exp_name,
-                        artifact_location=artifact_location_uri,
-                    )
-                else:
-                    print(
-                        f"MLflow tracking on experiment '{exp_name}' (Artifacts at: {experiment.artifact_location})"
-                    )
-            except Exception as e:
-                print(f"Notice: MLflow experiment setup: {e}")
-
-            mlflow.set_experiment(exp_name)
+            self._init_tracking()
 
         run_context = (
             mlflow.start_run(run_name=self.exp_name) if tracking_enabled else None
         )
+        run_id = (
+            run_context.info.run_id
+            if (run_context and hasattr(run_context, "info"))
+            else self.exp_name
+        )
 
-        # 1. Parse and Save Full Hydra Configuration
-        config_dict, hydra_yaml_path = self._persist_and_export_config()
+        (
+            self.best_checkpoint_path,
+            model_filename,
+            dvc_pointer,
+        ) = self.exp_manager.get_model_checkpoint_info(run_id)
 
-        # 2. Initial Dataset H-Q Split Visualization
-        try:
-            plot_hq_data_split(
-                self.train_dataset,
-                save_path=pjoin(self.plots_dir, "hq_data_split.png"),
-                exp_name=self.exp_name,
-            )
-        except Exception as e:
-            print(f"Notice: Initial data split plot skipped ({e})")
+        # 1. Parse configuration (no local file writing)
+        config_dict, yaml_content = self._persist_and_export_config()
+
+        if tracking_enabled:
+            # Set DVC pointer tags in MLflow
+            mlflow.set_tag("dvc_pointer", dvc_pointer)
+            mlflow.set_tag("model_filename", model_filename)
+
+            flat_params = self._flatten_config_for_mlflow(config_dict)
+            flat_params["total_params"] = self.total_params
+            flat_params["trainable_params"] = self.trainable_params
+            flat_params["extra_query_dim"] = self.extra_query_dim
+            flat_params["dvc_pointer"] = dvc_pointer
+            flat_params["model_filename"] = model_filename
+            mlflow.log_params({k: str(v)[:490] for k, v in flat_params.items()})
+
+            mlflow.log_dict(config_dict, artifact_file="config/config.json")
+            mlflow.log_text(yaml_content, artifact_file="config/hydra_config.yaml")
+
+            # 2. Initial Dataset H-Q Split Visualization directly to MLflow
+            try:
+                with tempfile.TemporaryDirectory() as tmp_split_dir:
+                    split_path = pjoin(tmp_split_dir, "hq_data_split.png")
+                    plot_hq_data_split(
+                        self.train_dataset,
+                        save_path=split_path,
+                        exp_name=self.exp_name,
+                    )
+                    mlflow.log_artifact(split_path, artifact_path="plots")
+            except Exception as e:
+                print(f"Notice: Initial data split plot skipped ({e})")
 
         train_losses: list[float] = []
         val_losses: list[float] = []
 
         try:
-            if tracking_enabled:
-                flat_params = self._flatten_config_for_mlflow(config_dict)
-                flat_params["total_params"] = self.total_params
-                flat_params["trainable_params"] = self.trainable_params
-                flat_params["extra_query_dim"] = self.extra_query_dim
-                mlflow.log_params({k: str(v)[:490] for k, v in flat_params.items()})
-
-                if os.path.exists(hydra_yaml_path):
-                    mlflow.log_artifact(hydra_yaml_path, artifact_path="config")
-
             total_target_epoch = (
                 self.start_epoch + epochs - 1 if self.start_epoch > 1 else epochs
             )
             print(
-                f"--- Starting Training Run: {self.exp_name} (Epochs {self.start_epoch} to {total_target_epoch}) ---"
+                f"--- Starting Training Run: {self.exp_name} | Model: {model_filename} | DVC: {dvc_pointer} (Epochs {self.start_epoch} to {total_target_epoch}) ---"
             )
 
             try:
@@ -911,3 +885,38 @@ class Pump2DTrainer:
         finally:
             if run_context is not None:
                 mlflow.end_run()
+
+
+def main() -> None:
+    """CLI entrypoint for standalone training execution with Hydra overrides."""
+    import sys
+    from src.training.config import load_hydra_config
+
+    if any(arg in sys.argv for arg in ("-h", "--help")):
+        print(
+            """
+Usage: python -m src.training.train [HYDRA_OVERRIDES...]
+
+Examples:
+  # Run standard training (DAGsHub remote tracking):
+  uv run python -m src.training.train exp_name=exp_009_test
+
+  # Run training locally (SQLite):
+  uv run python -m src.training.train tracking.target=local
+
+  # Override hyperparameters:
+  uv run python -m src.training.train training.epochs=100 optimizer.learning_rate=0.0005
+"""
+        )
+        return
+
+    overrides = sys.argv[1:]
+    cfg = load_hydra_config(overrides=overrides)
+    trainer = Pump2DTrainer(cfg)
+    trainer.fit()
+
+
+if __name__ == "__main__":
+    main()
+
+

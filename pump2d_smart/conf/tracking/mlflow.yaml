@@ -1,8 +1,14 @@
 # @package tracking
 enabled: true
 experiment_name: "Pump2D_SMART_Surrogate"
+target: "remote"  # "remote" (DAGsHub) or "local" (SQLite)
+
+# Remote (DAGsHub)
+repo_owner: "victor101pepe"
+repo_name: "POC_Tests_Water_Pumps"
+
+# Local (SQLite)
 tracking_uri: "sqlite:///mlflow.db"
-artifact_location: "./mlflow_artifacts"
-log_model_artifacts: true
-log_config_yaml: true
+
+
 

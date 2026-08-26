@@ -125,15 +125,14 @@ class DataConfig:
 
 @dataclass
 class TrackingConfig:
-    """Configuration for MLflow experiment tracking."""
+    """Configuration for MLflow experiment tracking (Remote DAGsHub or Local SQLite)."""
 
     enabled: bool = True
     experiment_name: str = "Pump2D_SMART_Surrogate"
+    target: str = "remote"  # "remote" (DAGsHub) or "local" (SQLite)
+    repo_owner: str = "victor101pepe"
+    repo_name: str = "POC_Tests_Water_Pumps"
     tracking_uri: str = "sqlite:///mlflow.db"
-    artifact_location: str = "./mlflow_artifacts"
-    log_model_artifacts: bool = True
-    log_config_yaml: bool = True
-
 
 
 @dataclass
