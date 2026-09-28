@@ -17,3 +17,4 @@ outputs/
 ruff_clean.sh
 mlflow.*
 3DPump_FirstRun_merged.stl
+/pump_metadata
