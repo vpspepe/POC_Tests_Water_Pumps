@@ -8,9 +8,7 @@ histories, visual plots, configuration snapshots, and DVC tags.
 
 import argparse
 import os
-import sys
 from os.path import join as pjoin
-from typing import Any
 
 import dagshub
 import mlflow
@@ -75,7 +73,9 @@ def sync_experiments(
         if local_exp.name == "Default":
             continue
 
-        print(f"\n📁 Checking Experiment: '{local_exp.name}' (Local ID: {local_exp.experiment_id})")
+        print(
+            f"\n📁 Checking Experiment: '{local_exp.name}' (Local ID: {local_exp.experiment_id})"
+        )
 
         # Ensure experiment exists on DAGsHub
         remote_exp = remote_client.get_experiment_by_name(local_exp.name)
@@ -85,10 +85,14 @@ def sync_experiments(
                 remote_exp_id = "dry_run_id"
             else:
                 remote_exp_id = remote_client.create_experiment(name=local_exp.name)
-                print(f"   ✓ Created remote experiment '{local_exp.name}' (Remote ID: {remote_exp_id})")
+                print(
+                    f"   ✓ Created remote experiment '{local_exp.name}' (Remote ID: {remote_exp_id})"
+                )
         else:
             remote_exp_id = remote_exp.experiment_id
-            print(f"   ✓ Found remote experiment '{local_exp.name}' (Remote ID: {remote_exp_id})")
+            print(
+                f"   ✓ Found remote experiment '{local_exp.name}' (Remote ID: {remote_exp_id})"
+            )
 
         # Get existing remote runs to avoid duplicates
         existing_remote_runs = set()
@@ -112,18 +116,27 @@ def sync_experiments(
         untracked_runs = []
         for r in local_runs:
             r_name = r.data.tags.get("mlflow.runName", r.info.run_name or "")
-            if r_name not in existing_remote_runs and r.info.run_id not in existing_remote_runs:
+            if (
+                r_name not in existing_remote_runs
+                and r.info.run_id not in existing_remote_runs
+            ):
                 untracked_runs.append(r)
 
         if not untracked_runs:
-            print(f"   ✓ All {len(local_runs)} local runs are already synced on DAGsHub!")
+            print(
+                f"   ✓ All {len(local_runs)} local runs are already synced on DAGsHub!"
+            )
             continue
 
         print(f"   🚀 Found {len(untracked_runs)} untracked run(s) to upload:\n")
 
         for idx, local_run in enumerate(untracked_runs, 1):
-            run_name = local_run.data.tags.get("mlflow.runName", local_run.info.run_name or f"run_{idx}")
-            print(f"   [{idx}/{len(untracked_runs)}] Syncing '{run_name}' (Local ID: {local_run.info.run_id})...")
+            run_name = local_run.data.tags.get(
+                "mlflow.runName", local_run.info.run_name or f"run_{idx}"
+            )
+            print(
+                f"   [{idx}/{len(untracked_runs)}] Syncing '{run_name}' (Local ID: {local_run.info.run_id})..."
+            )
 
             if dry_run:
                 print("      [Dry Run] Would upload parameters, metrics, and plots.")
@@ -131,7 +144,11 @@ def sync_experiments(
                 continue
 
             # Create remote run
-            tags = [RunTag(k, str(v)) for k, v in local_run.data.tags.items() if not k.startswith("mlflow.source")]
+            tags = [
+                RunTag(k, str(v))
+                for k, v in local_run.data.tags.items()
+                if not k.startswith("mlflow.source")
+            ]
             tags.append(RunTag("mlflow.runName", run_name))
             tags.append(RunTag("local_run_id", local_run.info.run_id))
 
@@ -154,31 +171,47 @@ def sync_experiments(
             params.append(Param("model_filename", model_filename))
             params.append(Param("dvc_pointer", dvc_pointer))
             for i in range(0, len(params), 100):
-                remote_client.log_batch(new_run_id, params=params[i:i+100])
+                remote_client.log_batch(new_run_id, params=params[i : i + 100])
 
             # Upload Full Metric Histories
             all_metrics = []
             for metric_key in local_run.data.metrics.keys():
-                history = local_client.get_metric_history(local_run.info.run_id, metric_key)
+                history = local_client.get_metric_history(
+                    local_run.info.run_id, metric_key
+                )
                 for m in history:
-                    all_metrics.append(Metric(key=m.key, value=m.value, timestamp=m.timestamp, step=m.step))
+                    all_metrics.append(
+                        Metric(
+                            key=m.key, value=m.value, timestamp=m.timestamp, step=m.step
+                        )
+                    )
 
             for i in range(0, len(all_metrics), 500):
-                remote_client.log_batch(new_run_id, metrics=all_metrics[i:i+500])
+                remote_client.log_batch(new_run_id, metrics=all_metrics[i : i + 500])
 
-            print(f"      ✓ Uploaded {len(params)} parameters and {len(all_metrics)} metric steps.")
+            print(
+                f"      ✓ Uploaded {len(params)} parameters and {len(all_metrics)} metric steps."
+            )
 
             # Upload Visual Artifacts (plots and configs)
             # Check mlflow_artifacts or experiments/<run_name>/plots
             possible_art_paths = [
-                pjoin(smart_dir, "mlflow_artifacts", str(local_exp.experiment_id), local_run.info.run_id, "artifacts"),
+                pjoin(
+                    smart_dir,
+                    "mlflow_artifacts",
+                    str(local_exp.experiment_id),
+                    local_run.info.run_id,
+                    "artifacts",
+                ),
                 pjoin(smart_dir, "experiments", run_name, "plots"),
             ]
 
             for art_dir in possible_art_paths:
                 if os.path.exists(art_dir):
                     if art_dir.endswith("plots"):
-                        remote_client.log_artifacts(new_run_id, art_dir, artifact_path="plots")
+                        remote_client.log_artifacts(
+                            new_run_id, art_dir, artifact_path="plots"
+                        )
                         print("      ✓ Uploaded evaluation plots")
                     else:
                         for item in os.listdir(art_dir):
@@ -186,7 +219,9 @@ def sync_experiments(
                             if item == "checkpoints":
                                 continue  # Keep binary weights in DVC
                             if os.path.isdir(item_path):
-                                remote_client.log_artifacts(new_run_id, item_path, artifact_path=item)
+                                remote_client.log_artifacts(
+                                    new_run_id, item_path, artifact_path=item
+                                )
                             elif os.path.isfile(item_path):
                                 remote_client.log_artifact(new_run_id, item_path)
                         print("      ✓ Uploaded plots and config snapshots")
@@ -212,11 +247,19 @@ def sync_experiments(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Sync local MLflow SQLite runs to DAGsHub.")
-    parser.add_argument("--repo-owner", default="victor101pepe", help="DAGsHub repo owner")
-    parser.add_argument("--repo-name", default="POC_Tests_Water_Pumps", help="DAGsHub repo name")
+    parser = argparse.ArgumentParser(
+        description="Sync local MLflow SQLite runs to DAGsHub."
+    )
+    parser.add_argument(
+        "--repo-owner", default="victor101pepe", help="DAGsHub repo owner"
+    )
+    parser.add_argument(
+        "--repo-name", default="POC_Tests_Water_Pumps", help="DAGsHub repo name"
+    )
     parser.add_argument("--db-path", default="", help="Path to local mlflow.db")
-    parser.add_argument("--dry-run", action="store_true", help="Preview runs to sync without uploading")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Preview runs to sync without uploading"
+    )
 
     args = parser.parse_args()
     sync_experiments(

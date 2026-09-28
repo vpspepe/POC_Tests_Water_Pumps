@@ -16,13 +16,11 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-import pyvista as pv
 import torch
 from matplotlib import tri
 from matplotlib.lines import Line2D
-from scipy.spatial import KDTree
 from src.data.dataset import Pump2DDataset
-from src.training.calculate_pump_heads import compute_pump_head, extract_unique_edges
+from src.training.calculate_pump_heads import compute_pump_head
 from src.training.feature_manager import FeatureManager
 
 
@@ -69,6 +67,57 @@ def plot_side_by_side(
     plt.savefig(save_path, dpi=200, bbox_inches="tight")
     plt.close()
     print(f"Saved comparison plot to: {save_path}")
+
+
+def plot_boundary_side_by_side(
+    coords: np.ndarray,
+    truth: np.ndarray,
+    pred: np.ndarray,
+    title: str,
+    save_path: str,
+    subtitle: str = "",
+    cmap: str = "viridis",
+) -> None:
+    """Generates side-by-side comparison scatter plots on surface boundaries: Truth | SMART | Error."""
+    error = np.abs(truth - pred)
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+    vmin = min(float(truth.min()), float(pred.min()))
+    vmax = max(float(truth.max()), float(pred.max()))
+
+    # 1. Ground Truth
+    ax0 = axes[0]
+    sc0 = ax0.scatter(
+        coords[:, 0], coords[:, 1], c=truth, cmap=cmap, vmin=vmin, vmax=vmax, s=14
+    )
+    fig.colorbar(sc0, ax=ax0)
+    ax0.set_title(f"COMSOL Boundary Truth ({title})\n{subtitle}")
+    ax0.set_aspect("equal")
+    ax0.axis("off")
+
+    # 2. Prediction
+    ax1 = axes[1]
+    sc1 = ax1.scatter(
+        coords[:, 0], coords[:, 1], c=pred, cmap=cmap, vmin=vmin, vmax=vmax, s=14
+    )
+    fig.colorbar(sc1, ax=ax1)
+    ax1.set_title(f"SMART Boundary Prediction ({title})\n{subtitle}")
+    ax1.set_aspect("equal")
+    ax1.axis("off")
+
+    # 3. Absolute Error
+    ax2 = axes[2]
+    sc2 = ax2.scatter(coords[:, 0], coords[:, 1], c=error, cmap="inferno", s=14)
+    fig.colorbar(sc2, ax=ax2)
+    ax2.set_title(f"Absolute Error ({title})")
+    ax2.set_aspect("equal")
+    ax2.axis("off")
+
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+    plt.savefig(save_path, dpi=200, bbox_inches="tight")
+    plt.close()
+    print(f"Saved boundary comparison plot to: {save_path}")
 
 
 def plot_hq_data_split(
@@ -323,7 +372,7 @@ def plot_field_contours(
     pred_mag = np.sqrt(pred_vx**2 + pred_vy**2)
 
     pts = dataset.samples[0]["volume_coords"]
-    triangulation = tri.Triangulation(pts[:, 0], pts[:, 1], dataset.triangles)
+    is_boundary_only = getattr(dataset, "boundary_only", False) or len(dataset.triangles) == 0
 
     plots = []
     field_configs = [
@@ -340,20 +389,35 @@ def plot_field_contours(
     ]
 
     subtitle = f"$Q_{{in}}={q_in:.2f}$ m$^3$/h, {rot_rpm:.0f} RPM"
-    for title, truth_arr, pred_arr, filename, cmap in field_configs:
-        out_path = pjoin(save_dir, filename)
-        plot_side_by_side(
-            triangulation=triangulation,
-            truth=truth_arr,
-            pred=pred_arr,
-            title=title,
-            save_path=out_path,
-            subtitle=subtitle,
-            cmap=cmap,
-        )
-        plots.append(out_path)
+    if is_boundary_only:
+        for title, truth_arr, pred_arr, filename, cmap in field_configs:
+            out_path = pjoin(save_dir, filename)
+            plot_boundary_side_by_side(
+                coords=pts,
+                truth=truth_arr,
+                pred=pred_arr,
+                title=title,
+                save_path=out_path,
+                subtitle=subtitle,
+                cmap=cmap,
+            )
+            plots.append(out_path)
+    else:
+        triangulation = tri.Triangulation(pts[:, 0], pts[:, 1], dataset.triangles)
+        for title, truth_arr, pred_arr, filename, cmap in field_configs:
+            out_path = pjoin(save_dir, filename)
+            plot_side_by_side(
+                triangulation=triangulation,
+                truth=truth_arr,
+                pred=pred_arr,
+                title=title,
+                save_path=out_path,
+                subtitle=subtitle,
+                cmap=cmap,
+            )
+            plots.append(out_path)
 
-    print(f"Saved {len(plots)} field contour plots to: {save_dir}")
+    print(f"Saved {len(plots)} field plots to: {save_dir}")
     return plots
 
 

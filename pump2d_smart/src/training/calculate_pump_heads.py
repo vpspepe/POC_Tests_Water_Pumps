@@ -1,14 +1,38 @@
 """Physics and Numerical Integration Helpers for Pump Simulation Analysis.
 
-Provides line integration, undirected edge extraction, and physical pump head calculations.
+Reuses core geometric line integration, undirected edge extraction, and pump metric
+calculations from pump_static_rom while maintaining full backwards compatibility.
 """
+
+from __future__ import annotations
 
 import numpy as np
 import pyvista as pv
+from pump_static_rom.boundary.geometry import (
+    extract_edges_from_connectivity,
+    line_integral,
+    unique_undirected_edges,
+)
+from pump_static_rom.metrics.pump import (
+    BoundaryProbe,
+    PumpMetrics,
+    compute_pump_metrics_for_case,
+)
+
+__all__ = [
+    "BoundaryProbe",
+    "PumpMetrics",
+    "compute_full_pump_metrics",
+    "compute_pump_head",
+    "extract_unique_edges",
+    "line_integral",
+]
 
 
 def extract_unique_edges(mesh: pv.UnstructuredGrid) -> np.ndarray:
     """Safely extracts unique undirected line edges from UnstructuredGrid cell arrays.
+
+    Delegates directly to pump_static_rom.boundary.geometry routines.
 
     Args:
         mesh: PyVista UnstructuredGrid boundary mesh.
@@ -16,57 +40,8 @@ def extract_unique_edges(mesh: pv.UnstructuredGrid) -> np.ndarray:
     Returns:
         Array of unique point index pairs of shape (M, 2).
     """
-    VTK_LINE = 3
-    VTK_POLY_LINE = 4
-    edges = []
-    celltypes = np.asarray(mesh.celltypes, dtype=np.uint8)
-    cells = np.asarray(mesh.cells, dtype=np.int64)
-
-    i = 0
-    while i < len(cells):
-        n = int(cells[i])
-        ids = cells[i + 1 : i + 1 + n]
-        ctype = (
-            celltypes[i // (n + 1)]
-            if (i // (n + 1)) < len(celltypes)
-            else celltypes[-1]
-        )
-        if ctype in (VTK_LINE, VTK_POLY_LINE) and n >= 2:
-            for j in range(n - 1):
-                a, b = int(ids[j]), int(ids[j + 1])
-                if a != b:
-                    edges.append((a, b))
-        i += n + 1
-
-    seen = set()
-    uniq = []
-    for a, b in edges:
-        key = (a, b) if a < b else (b, a)
-        if key not in seen:
-            seen.add(key)
-            uniq.append(key)
-    return np.array(uniq, dtype=np.int64)
-
-
-def line_integral(values: np.ndarray, points: np.ndarray, edges: np.ndarray) -> float:
-    """Calculates the trapezoidal line integral of values over points connected by edges.
-
-    Args:
-        values: Field values at boundary points.
-        points: Coordinates of boundary points of shape (N, 2).
-        edges: Connectivity indices of shape (M, 2).
-
-    Returns:
-        Trapezoidal line integral value.
-    """
-    if edges.shape[0] == 0:
-        return 0.0
-    p0 = points[edges[:, 0], :2]
-    p1 = points[edges[:, 1], :2]
-    ds = np.linalg.norm(p1 - p0, axis=1)
-    f0 = values[edges[:, 0]]
-    f1 = values[edges[:, 1]]
-    return float(np.sum(0.5 * (f0 + f1) * ds))
+    raw_edges = extract_edges_from_connectivity(mesh)
+    return unique_undirected_edges(raw_edges)
 
 
 def compute_pump_head(
@@ -84,6 +59,8 @@ def compute_pump_head(
 ) -> float:
     """Calculates the average total pressure difference and head between inlet and outlet.
 
+    Delegates to pump_static_rom.metrics.pump.compute_pump_metrics_for_case.
+
     Args:
         p_all: Volume static pressure field.
         vx_all: Volume velocity field (X component).
@@ -100,35 +77,110 @@ def compute_pump_head(
     Returns:
         Calculated physical head H (m).
     """
-    # 1. Extract boundary field values
-    p_in = p_all[idx_in]
-    vx_in = vx_all[idx_in]
-    vy_in = vy_all[idx_in]
-    v_in_sq = vx_in**2 + vy_in**2
+    metrics = compute_full_pump_metrics(
+        p_all=p_all,
+        vx_all=vx_all,
+        vy_all=vy_all,
+        idx_in=idx_in,
+        idx_out=idx_out,
+        pts_in=pts_in,
+        pts_out=pts_out,
+        e_in=e_in,
+        e_out=e_out,
+        rho=rho,
+        g=g,
+    )
+    return float(metrics.h)
 
-    p_out = p_all[idx_out]
-    vx_out = vx_all[idx_out]
-    vy_out = vy_all[idx_out]
-    v_out_sq = vx_out**2 + vy_out**2
 
-    # 2. Total pressure fields Pt
-    pt_in = p_in + 0.5 * rho * v_in_sq
-    pt_out = p_out + 0.5 * rho * v_out_sq
+def compute_full_pump_metrics(
+    p_all: np.ndarray,
+    vx_all: np.ndarray,
+    vy_all: np.ndarray,
+    idx_in: np.ndarray,
+    idx_out: np.ndarray,
+    pts_in: np.ndarray,
+    pts_out: np.ndarray,
+    e_in: np.ndarray,
+    e_out: np.ndarray,
+    vz_all: np.ndarray | None = None,
+    qin: float = 0.0,
+    rpm: int = 0,
+    rho: float = 998.0,
+    g: float = 9.81,
+    blades_probe: BoundaryProbe | None = None,
+    t_tracx: np.ndarray | None = None,
+    t_tracy: np.ndarray | None = None,
+    alphat: np.ndarray | None = None,
+) -> PumpMetrics:
+    """Computes comprehensive engineering pump metrics using pump_static_rom.
 
-    # 3. Integrate weighted total pressure over boundary lines
-    int_pt_in = line_integral(pt_in, pts_in, e_in)
-    int_pt_out = line_integral(pt_out, pts_out, e_out)
+    Returns:
+        PumpMetrics dataclass containing head H, static and total delta_p,
+        mass flow rates, torque, power, and efficiency.
+    """
+    pts_in_arr = np.asarray(pts_in, dtype=float)
+    pts_out_arr = np.asarray(pts_out, dtype=float)
 
-    # 4. Integrate line lengths
-    ones_in = np.ones(len(pts_in))
-    ones_out = np.ones(len(pts_out))
-    len_in = line_integral(ones_in, pts_in, e_in)
-    len_out = line_integral(ones_out, pts_out, e_out)
+    # Ensure 3D coordinate shape for probes
+    if pts_in_arr.shape[1] == 2:
+        pts_in_3d = np.column_stack([pts_in_arr, np.zeros(len(pts_in_arr))])
+    else:
+        pts_in_3d = pts_in_arr
 
-    # 5. Average total pressures
-    pt_in_avg = int_pt_in / len_in if len_in > 0 else 0.0
-    pt_out_avg = int_pt_out / len_out if len_out > 0 else 0.0
+    if pts_out_arr.shape[1] == 2:
+        pts_out_3d = np.column_stack([pts_out_arr, np.zeros(len(pts_out_arr))])
+    else:
+        pts_out_3d = pts_out_arr
 
-    # 6. Calculate head
-    head = (pt_out_avg - pt_in_avg) / (rho * g)
-    return float(head)
+    inlet_probe = BoundaryProbe(
+        name="Inlet",
+        points=pts_in_3d,
+        edges=np.asarray(e_in, dtype=int),
+        idx_main=np.asarray(idx_in, dtype=int),
+        normals_out=np.zeros_like(pts_in_3d),
+    )
+
+    outlet_probe = BoundaryProbe(
+        name="Outlet",
+        points=pts_out_3d,
+        edges=np.asarray(e_out, dtype=int),
+        idx_main=np.asarray(idx_out, dtype=int),
+        normals_out=np.zeros_like(pts_out_3d),
+    )
+
+    if blades_probe is None:
+        # Dummy blade probe to satisfy required probe check in pump_static_rom
+        blades_probe = BoundaryProbe(
+            name="Blades",
+            points=pts_in_3d[:2],
+            edges=np.array([[0, 1]], dtype=int),
+            idx_main=np.asarray(idx_in[:2], dtype=int),
+            normals_out=np.zeros((2, 3)),
+        )
+
+    probes = {
+        "Inlet": inlet_probe,
+        "Outlet": outlet_probe,
+        "Blades": blades_probe,
+    }
+
+    if vz_all is None:
+        vz_arr = np.zeros_like(vx_all)
+    else:
+        vz_arr = vz_all
+
+    return compute_pump_metrics_for_case(
+        qin=float(qin),
+        rpm=int(rpm),
+        pressure=p_all,
+        vx=vx_all,
+        vy=vy_all,
+        vz=vz_arr,
+        probes=probes,
+        rho_ref=float(rho),
+        g_const=float(g),
+        t_tracx=t_tracx,
+        t_tracy=t_tracy,
+        alphat=alphat,
+    )

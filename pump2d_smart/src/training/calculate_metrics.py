@@ -66,6 +66,7 @@ def calculate_validation_metrics(
         test_split=test_split_val,
         n_train=n_train_val,
         sparse_hq_split=bool(getattr(cfg_data, "sparse_hq_split", True)),
+        boundary_only=bool(getattr(cfg_data, "boundary_only", False)),
     )
 
     save_dir = getattr(cfg_training, "save_model_dir", "./checkpoints")

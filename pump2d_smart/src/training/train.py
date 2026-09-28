@@ -132,6 +132,7 @@ class Pump2DTrainer:
 
         sparse_hq_split = bool(getattr(self.cfg_data, "sparse_hq_split", True))
         seed = int(getattr(self.cfg_training, "seed", 42))
+        boundary_only = bool(getattr(self.cfg_data, "boundary_only", False))
 
         self.train_dataset = Pump2DDataset(
             main_vtu_path=main_vtu,
@@ -142,6 +143,7 @@ class Pump2DTrainer:
             sparse_hq_split=sparse_hq_split,
             n_train=n_train,
             seed=seed,
+            boundary_only=boundary_only,
         )
         self.test_dataset = Pump2DDataset(
             main_vtu_path=main_vtu,
@@ -152,6 +154,7 @@ class Pump2DTrainer:
             sparse_hq_split=sparse_hq_split,
             n_train=n_train,
             seed=seed,
+            boundary_only=boundary_only,
         )
 
         batch_size = int(getattr(self.cfg_training, "batch_size", 2))
@@ -387,13 +390,11 @@ class Pump2DTrainer:
             curriculum_gamma=gamma,
         )
 
-
     def _init_experiment_tracking(self) -> None:
         """Sets up isolated experiment directory structure and checkpoint paths."""
         self.exp_manager = ExperimentManager(self.config)
         self.save_model_dir = self.exp_manager.checkpoints_dir
         self.best_checkpoint_path = pjoin(self.save_model_dir, "best_smart_pump2d.pt")
-
 
     def _resume_checkpoint_if_specified(self) -> None:
         """Resumes weights, epoch, score, and optimizer state from checkpoint if requested."""
@@ -525,7 +526,6 @@ class Pump2DTrainer:
 
         return epoch_loss / len(self.train_loader), grad_norms
 
-
     @torch.no_grad()
     def validate(self) -> dict[str, float]:
         """Evaluates model loss and regression metrics on the validation split.
@@ -652,7 +652,6 @@ class Pump2DTrainer:
                 yaml_content = str(config_dict)
 
         return config_dict, yaml_content
-
 
     def _flatten_config_for_mlflow(
         self, d: dict[str, Any], parent_key: str = "", sep: str = "."
@@ -930,6 +929,7 @@ class Pump2DTrainer:
 def main() -> None:
     """CLI entrypoint for standalone training execution with Hydra overrides."""
     import sys
+
     from src.training.config import load_hydra_config
 
     if any(arg in sys.argv for arg in ("-h", "--help")):
@@ -958,5 +958,3 @@ Examples:
 
 if __name__ == "__main__":
     main()
-
-

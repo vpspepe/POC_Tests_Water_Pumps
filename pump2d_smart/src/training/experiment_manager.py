@@ -73,5 +73,3 @@ class ExperimentManager:
             experiments_base, exp_name, "checkpoints", model_filename
         )
         return checkpoint_path, model_filename, dvc_pointer
-
-

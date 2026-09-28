@@ -43,6 +43,7 @@ dependencies = [
   "ruff>=0.16.3",
   "dagshub>=0.7.1",
   "tqdm>=4.67.1",
+  "pumpstaticrom",
 ]
 
 [[tool.uv.index]]
@@ -55,6 +56,6 @@ pod-rbf = { git = "https://github.com/kylebeggs/POD-RBF.git" }
 shape-foundation = { git = "https://github.com/vpspepe/shape.git", branch = "dev" }
 torch = { index = "pytorch-cu124" }
 antigravity-nb = { git = "https://github.com/Ian747-tw/Antigravity-Jupiter-Notebook-MCP.git" }
-
+pumpstaticrom = { path = "../PumpStaticROM", editable = true }
 [tool.ruff.lint]
 ignore = ["BLE001"]

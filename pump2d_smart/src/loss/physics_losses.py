@@ -215,7 +215,9 @@ class ECOTWINPhysicsLoss(nn.Module):
             "physics_curriculum_gamma": float(curriculum_gamma)
         }
 
-        def _scale_term(term_loss: torch.Tensor, weight: float, name: str) -> torch.Tensor:
+        def _scale_term(
+            term_loss: torch.Tensor, weight: float, name: str
+        ) -> torch.Tensor:
             if self.scaling == "relative" and data_loss is not None:
                 # Dynamic scale: s = data_loss / (term_loss + eps)
                 scale = data_loss.detach() / (term_loss.detach() + 1e-7)
@@ -282,4 +284,3 @@ class ECOTWINPhysicsLoss(nn.Module):
         metrics["loss_physics_total"] = float(total_loss.item())
 
         return total_loss, metrics
-

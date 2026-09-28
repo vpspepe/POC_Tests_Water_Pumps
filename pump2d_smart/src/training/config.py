@@ -97,10 +97,11 @@ class PhysicsTermsConfig:
     flux_weight: float = 0.0
     outlet_p_weight: float = 0.0
     wall_weight: float = 0.0
-    scaling: str = "relative"  # "relative" (dynamic balance to data MSE) or "fixed" (unscaled)
+    scaling: str = (
+        "relative"  # "relative" (dynamic balance to data MSE) or "fixed" (unscaled)
+    )
     warmup_epochs: int = 20
     rampup_epochs: int = 30
-
 
 
 @dataclass
@@ -126,6 +127,7 @@ class DataConfig:
     sparse_hq_split: bool = True
     n_train: int | None = None
     seed: int = 42
+    boundary_only: bool = False
 
 
 @dataclass

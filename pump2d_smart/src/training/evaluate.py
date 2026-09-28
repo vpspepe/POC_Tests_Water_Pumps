@@ -13,11 +13,13 @@ from os.path import join as pjoin
 from typing import Any
 
 import matplotlib
+
 matplotlib.use("Agg")
 import numpy as np
 import torch
 from smart.smart.models.smart.smart import SMART
 from src.data.dataset import Pump2DDataset
+from src.training.calculate_pump_heads import compute_full_pump_metrics
 from src.training.config import Pump2DConfig, load_hydra_config
 from src.training.feature_manager import FeatureManager
 from src.training.metrics import compute_field_metrics
@@ -151,6 +153,7 @@ def evaluate_model(
         test_split=test_split_val,
         n_train=n_train_val,
         sparse_hq_split=bool(getattr(cfg_data, "sparse_hq_split", True)),
+        boundary_only=bool(getattr(cfg_data, "boundary_only", False)),
     )
 
     out_dir = save_dir or pjoin(
@@ -171,6 +174,19 @@ def evaluate_model(
 
         mean_vol = test_dataset.mean_vol_data
         std_vol = test_dataset.std_vol_data
+
+        pts_in = test_dataset.inlet_coords
+        pts_out = test_dataset.outlet_coords
+        e_in = test_dataset.inlet_edges
+        e_out = test_dataset.outlet_edges
+        idx_in = test_dataset.idx_in
+        idx_out = test_dataset.idx_out
+
+        eng_metrics: dict[str, dict[str, list[float]]] = {
+            "Head_H [m]": {"truth": [], "pred": [], "err": [], "rel": []},
+            "DeltaP_tot [Pa]": {"truth": [], "pred": [], "err": [], "rel": []},
+            "DeltaP_static [Pa]": {"truth": [], "pred": [], "err": [], "rel": []},
+        }
 
         with torch.no_grad():
             for idx in range(len(test_dataset)):
@@ -200,8 +216,14 @@ def evaluate_model(
 
                 truth_p, pred_p = truth_vol[:, 0], pred_vol[:, 0]
                 truth_vx, pred_vx = truth_vol[:, 1], pred_vol[:, 1]
-                truth_vy = truth_vol[:, 2] if truth_vol.shape[1] > 2 else np.zeros_like(truth_vx)
-                pred_vy = pred_vol[:, 2] if pred_vol.shape[1] > 2 else np.zeros_like(pred_vx)
+                truth_vy = (
+                    truth_vol[:, 2]
+                    if truth_vol.shape[1] > 2
+                    else np.zeros_like(truth_vx)
+                )
+                pred_vy = (
+                    pred_vol[:, 2] if pred_vol.shape[1] > 2 else np.zeros_like(pred_vx)
+                )
 
                 truth_mag = np.sqrt(truth_vx**2 + truth_vy**2)
                 pred_mag = np.sqrt(pred_vx**2 + pred_vy**2)
@@ -218,6 +240,51 @@ def evaluate_model(
                     for mname, mval in res.items():
                         field_metrics[fname][mname].append(mval)
 
+                # Integrated physical engineering metrics via PumpStaticROM
+                raw_p = test_dataset.samples[test_dataset.active_indices[idx]]["params"]
+                q_in_val, rpm_val = float(raw_p[0]), int(raw_p[1])
+
+                m_t = compute_full_pump_metrics(
+                    truth_p,
+                    truth_vx,
+                    truth_vy,
+                    idx_in,
+                    idx_out,
+                    pts_in,
+                    pts_out,
+                    e_in,
+                    e_out,
+                    qin=q_in_val,
+                    rpm=rpm_val,
+                    blades_probe=test_dataset.blades_probe,
+                )
+                m_p = compute_full_pump_metrics(
+                    pred_p,
+                    pred_vx,
+                    pred_vy,
+                    idx_in,
+                    idx_out,
+                    pts_in,
+                    pts_out,
+                    e_in,
+                    e_out,
+                    qin=q_in_val,
+                    rpm=rpm_val,
+                    blades_probe=test_dataset.blades_probe,
+                )
+
+                for k, v_t, v_p in [
+                    ("Head_H [m]", m_t.h, m_p.h),
+                    ("DeltaP_tot [Pa]", m_t.delta_p_tot, m_p.delta_p_tot),
+                    ("DeltaP_static [Pa]", m_t.delta_p, m_p.delta_p),
+                ]:
+                    err = abs(v_t - v_p)
+                    rel = err / abs(v_t) if abs(v_t) > 1e-4 else 0.0
+                    eng_metrics[k]["truth"].append(v_t)
+                    eng_metrics[k]["pred"].append(v_p)
+                    eng_metrics[k]["err"].append(err)
+                    eng_metrics[k]["rel"].append(rel)
+
         summary_metrics: dict[str, dict[str, float]] = {}
         print("\n| Predicted Field | MAE | MSE | Rel L1 [%] | Rel L2 [%] | R² Score |")
         print("| :--- | :---: | :---: | :---: | :---: | :---: |")
@@ -233,9 +300,30 @@ def evaluate_model(
             )
         results["field_metrics"] = summary_metrics
 
+        print("\n| Physical Metric (PumpStaticROM) | Truth (Mean) | SMART Pred (Mean) | MAE | Rel Error [%] |")
+        print("| :--- | :---: | :---: | :---: | :---: |")
+        summary_eng: dict[str, dict[str, float]] = {}
+        for k, v in eng_metrics.items():
+            t_mean = float(np.mean(v["truth"]))
+            p_mean = float(np.mean(v["pred"]))
+            err_mean = float(np.mean(v["err"]))
+            rel_mean_pct = float(np.mean(v["rel"])) * 100.0
+            summary_eng[k] = {
+                "truth_mean": t_mean,
+                "pred_mean": p_mean,
+                "mae": err_mean,
+                "rel_pct": rel_mean_pct,
+            }
+            print(
+                f"| **{k}** | {t_mean:.3e} | {p_mean:.3e} | {err_mean:.3e} | **{rel_mean_pct:.2f}%** |"
+            )
+        results["engineering_metrics"] = summary_eng
+
     # 2. Side-by-Side Field Contours
     if generate_contours:
-        print(f"\nGenerating field contour plots for validation sample #{sample_idx}...")
+        print(
+            f"\nGenerating field contour plots for validation sample #{sample_idx}..."
+        )
         contour_plots = plot_field_contours(
             dataset=test_dataset,
             model=model,
@@ -314,4 +402,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
