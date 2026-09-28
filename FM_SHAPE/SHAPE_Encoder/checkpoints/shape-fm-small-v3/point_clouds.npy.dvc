@@ -1,0 +1,5 @@
+outs:
+- md5: 7be21cd48f70ce02d77c18484f5c8132
+  size: 375103616
+  hash: md5
+  path: point_clouds.npy

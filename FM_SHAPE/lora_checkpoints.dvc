@@ -1,0 +1,6 @@
+outs:
+- md5: 06fa13ac0fe811b5e5688218b42de516.dir
+  size: 464335
+  nfiles: 10
+  hash: md5
+  path: lora_checkpoints

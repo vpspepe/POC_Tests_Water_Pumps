@@ -1,0 +1,22 @@
+# Hydra configuration for SHAPE FM LoRA fine‑tuning
+config_path: shape/configs/small.yaml               # path to SHAPE yaml config
+checkpoint_dir: SHAPE_Encoder/checkpoints/shape-fm-small-v3
+
+data_root: pump_metadata_cache                           # precomputed cache folder
+output_dir: lora_checkpoints                         # where adapters are saved
+
+batch_size: 1                                        # load 1 sample at a time on GPU
+accumulation_steps: 4                                # accumulate embeddings over 4 steps for contrastive loss
+epochs: 10
+lr: 5e-4
+lora_rank: 8
+lora_alpha: 16
+temperature: 0.07
+recon_weight: 0.8
+contrast_weight: 0.2
+save_every: 5
+num_points: 8192                                     # 8k surface points per mesh
+
+device: cuda                                         # "cuda" or "cpu"
+num_workers: 4
+neighbor_backend: native
