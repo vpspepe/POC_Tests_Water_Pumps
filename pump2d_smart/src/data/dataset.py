@@ -23,19 +23,20 @@ from pump_static_rom.boundary.comsol import (
 )
 from pump_static_rom.metrics.pump import (
     BoundaryProbe,
-    build_boundary_probe_from_main,
-    extract_edges_from_connectivity,
     _edge_normals_out,
     _point_normals_from_edges,
+    build_boundary_probe_from_main,
+    extract_edges_from_connectivity,
 )
 from scipy.spatial import KDTree
+from torch.utils.data import Dataset
+
 from src.data.utils import kennard_stone_split
 from src.geometry.processor import Pump2DGeometryProcessor
 from src.training.calculate_pump_heads import (
     compute_pump_head,
     extract_unique_edges,
 )
-from torch.utils.data import Dataset
 
 
 class Pump2DSample(TypedDict):
@@ -294,7 +295,9 @@ class Pump2DDataset(Dataset[Pump2DSample]):
                 norm_blades = self._blades_probe.normals_out[:, :2].astype(np.float32)
                 p0_bl = pts_blades[e_blades[:, 0]]
                 p1_bl = pts_blades[e_blades[:, 1]]
-                weights_blades = np.linalg.norm(p1_bl - p0_bl, axis=1).astype(np.float32)
+                weights_blades = np.linalg.norm(p1_bl - p0_bl, axis=1).astype(
+                    np.float32
+                )
         else:
             pts_in = np.asarray(in_mesh.points, dtype=np.float32)[:, :2]
             pts_out = np.asarray(out_mesh.points, dtype=np.float32)[:, :2]
@@ -314,9 +317,9 @@ class Pump2DDataset(Dataset[Pump2DSample]):
             p1_out = pts_out[e_out[:, 1]]
             seg_out = p1_out - p0_out
             weights_out = np.linalg.norm(seg_out, axis=1).astype(np.float32)
-            raw_norm_out = np.column_stack([seg_out[:, 1], -seg_out[:, 0]]) / np.maximum(
-                weights_out[:, None], 1e-12
-            )
+            raw_norm_out = np.column_stack(
+                [seg_out[:, 1], -seg_out[:, 0]]
+            ) / np.maximum(weights_out[:, None], 1e-12)
             for k in range(len(raw_norm_out)):
                 if raw_norm_out[k, 1] < 0:
                     raw_norm_out[k] = -raw_norm_out[k]
@@ -340,7 +343,9 @@ class Pump2DDataset(Dataset[Pump2DSample]):
                 ).astype(np.float32)[:, :2]
                 p0_bl = pts_blades[e_blades[:, 0]]
                 p1_bl = pts_blades[e_blades[:, 1]]
-                weights_blades = np.linalg.norm(p1_bl - p0_bl, axis=1).astype(np.float32)
+                weights_blades = np.linalg.norm(p1_bl - p0_bl, axis=1).astype(
+                    np.float32
+                )
                 _, idx_blades = tree.query(pts_blades)
 
         boundary_dict: dict[str, Any] = {
@@ -832,9 +837,9 @@ class Pump2DDataset(Dataset[Pump2DSample]):
             edge_n = _edge_normals_out(
                 blades_mesh.points, edges, np.array([0.0, 0.0, 0.0])
             )
-            pt_n = _point_normals_from_edges(
-                blades_mesh.points, edges, edge_n
-            ).astype(np.float32)[:, :2]
+            pt_n = _point_normals_from_edges(blades_mesh.points, edges, edge_n).astype(
+                np.float32
+            )[:, :2]
 
             p0 = pts[edges[:, 0]]
             p1 = pts[edges[:, 1]]

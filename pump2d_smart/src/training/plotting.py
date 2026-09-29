@@ -19,6 +19,7 @@ import numpy as np
 import torch
 from matplotlib import tri
 from matplotlib.lines import Line2D
+
 from src.data.dataset import Pump2DDataset
 from src.training.calculate_pump_heads import compute_pump_head
 from src.training.feature_manager import FeatureManager
@@ -372,7 +373,9 @@ def plot_field_contours(
     pred_mag = np.sqrt(pred_vx**2 + pred_vy**2)
 
     pts = dataset.samples[0]["volume_coords"]
-    is_boundary_only = getattr(dataset, "boundary_only", False) or len(dataset.triangles) == 0
+    is_boundary_only = (
+        getattr(dataset, "boundary_only", False) or len(dataset.triangles) == 0
+    )
 
     plots = []
     field_configs = [

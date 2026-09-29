@@ -2,7 +2,7 @@
 
 from src.loss.losses import CombinedLoss, RelL2Loss
 from src.loss.physics_losses import (
-    ECOTWINPhysicsLoss,
+    PhysicsLoss,
     divergence_free_loss,
     flux_continuity_loss,
     outlet_pressure_loss,
@@ -11,7 +11,7 @@ from src.loss.physics_losses import (
 
 __all__ = [
     "CombinedLoss",
-    "ECOTWINPhysicsLoss",
+    "PhysicsLoss",
     "RelL2Loss",
     "divergence_free_loss",
     "flux_continuity_loss",

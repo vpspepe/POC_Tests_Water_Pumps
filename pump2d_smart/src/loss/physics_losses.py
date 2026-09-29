@@ -156,7 +156,7 @@ def outlet_pressure_loss(
     return torch.mean((p_outlet_pred - p_out_target) ** 2)
 
 
-class ECOTWINPhysicsLoss(nn.Module):
+class PhysicsLoss(nn.Module):
     """Composite Physics-Informed Loss Manager for ECOTWIN 2D Pump Models."""
 
     def __init__(
@@ -167,7 +167,7 @@ class ECOTWINPhysicsLoss(nn.Module):
         weight_outlet_p: float = 0.0,
         scaling: str = "relative",
     ) -> None:
-        """Initializes ECOTWINPhysicsLoss with loss term weights and scaling mode.
+        """Initializes PhysicsLoss with loss term weights and scaling mode.
 
         Args:
             weight_mass: Weight for divergence-free mass conservation (lambda_mass).

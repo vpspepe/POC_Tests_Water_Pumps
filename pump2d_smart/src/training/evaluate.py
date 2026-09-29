@@ -18,6 +18,7 @@ matplotlib.use("Agg")
 import numpy as np
 import torch
 from smart.smart.models.smart.smart import SMART
+
 from src.data.dataset import Pump2DDataset
 from src.training.calculate_pump_heads import compute_full_pump_metrics
 from src.training.config import Pump2DConfig, load_hydra_config
@@ -300,7 +301,9 @@ def evaluate_model(
             )
         results["field_metrics"] = summary_metrics
 
-        print("\n| Physical Metric (PumpStaticROM) | Truth (Mean) | SMART Pred (Mean) | MAE | Rel Error [%] |")
+        print(
+            "\n| Physical Metric (PumpStaticROM) | Truth (Mean) | SMART Pred (Mean) | MAE | Rel Error [%] |"
+        )
         print("| :--- | :---: | :---: | :---: | :---: |")
         summary_eng: dict[str, dict[str, float]] = {}
         for k, v in eng_metrics.items():
