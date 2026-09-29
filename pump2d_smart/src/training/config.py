@@ -40,7 +40,7 @@ class TrainingConfig:
 
 @dataclass
 class OptimizerConfig:
-    """Configuration for optimizer."""
+    """Configuration for optimizer (adamw, nadamw, adam, nadam)."""
 
     type: str = "adamw"
     learning_rate: float = 1e-3
@@ -48,6 +48,7 @@ class OptimizerConfig:
     beta1: float = 0.9
     beta2: float = 0.999
     eps: float = 1e-8
+    momentum_decay: float = 0.004
 
 
 @dataclass

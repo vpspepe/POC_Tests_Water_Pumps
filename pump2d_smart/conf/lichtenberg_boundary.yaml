@@ -1,0 +1,21 @@
+# @package _global_
+defaults:
+  - model: smart_small
+  - training: default
+  - optimizer: adamw
+  - lr_scheduler: reduce_on_plateau
+  - early_stopping: default
+  - features: boundary_no_sdf
+  - loss: physics_informed
+  - data: boundary_only
+  - tracking: mlflow
+  - _self_
+
+exp_name: "exp_lb2_boundary_continue_physics"
+resume_from_checkpoint: "experiments/exp_lb2_boundary/checkpoints/model_ea8d473d205642c8813ecbc524808316.pt"
+
+training:
+  epochs: 200
+  batch_size: 3
+  num_threads: 2
+  num_workers: 0

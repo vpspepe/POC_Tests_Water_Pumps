@@ -5,6 +5,7 @@ CosineAnnealingLR, ExponentialLR), Early Stopping, selective SDF features,
 and comprehensive MLflow metric logging.
 """
 
+import copy
 import os
 import tempfile
 from os.path import join as pjoin
@@ -16,10 +17,12 @@ import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
 from smart.smart.models.smart.smart import SMART
+from torch.utils.data import DataLoader
+
 from src.data.dataset import Pump2DDataset
 from src.loss.losses import CombinedLoss
 from src.loss.physics_losses import (
-    ECOTWINPhysicsLoss,
+    PhysicsLoss,
 )
 from src.training.config import Pump2DConfig
 from src.training.early_stopping import EarlyStopping
@@ -33,7 +36,6 @@ from src.training.plotting import (
     plot_hq_head_predictions,
     plot_loss_curves,
 )
-from torch.utils.data import DataLoader
 
 
 class Pump2DTrainer:
@@ -209,18 +211,51 @@ class Pump2DTrainer:
         )
 
     def _init_optimizer_and_scheduler(self) -> None:
-        """Configures the optimizer (Adam/AdamW) and learning rate scheduler."""
+        """Configures the optimizer (Adam/AdamW/NAdamW) and learning rate scheduler."""
         lr = float(getattr(self.cfg_optimizer, "learning_rate", 1e-3))
         weight_decay = float(getattr(self.cfg_optimizer, "weight_decay", 1e-4))
+        beta1 = float(getattr(self.cfg_optimizer, "beta1", 0.9))
+        beta2 = float(getattr(self.cfg_optimizer, "beta2", 0.999))
+        eps = float(getattr(self.cfg_optimizer, "eps", 1e-8))
+        momentum_decay = float(getattr(self.cfg_optimizer, "momentum_decay", 0.004))
         opt_type = getattr(self.cfg_optimizer, "type", "adamw").lower()
 
         if opt_type == "adam":
             self.optimizer = torch.optim.Adam(
-                self.model.parameters(), lr=lr, weight_decay=weight_decay
+                self.model.parameters(),
+                lr=lr,
+                betas=(beta1, beta2),
+                eps=eps,
+                weight_decay=weight_decay,
+            )
+        elif opt_type in ("nadamw", "nadam_w"):
+            # NAdam with decoupled weight decay is NAdamW
+            self.optimizer = torch.optim.NAdam(
+                self.model.parameters(),
+                lr=lr,
+                betas=(beta1, beta2),
+                eps=eps,
+                weight_decay=weight_decay,
+                momentum_decay=momentum_decay,
+                decoupled_weight_decay=True,
+            )
+        elif opt_type == "nadam":
+            self.optimizer = torch.optim.NAdam(
+                self.model.parameters(),
+                lr=lr,
+                betas=(beta1, beta2),
+                eps=eps,
+                weight_decay=weight_decay,
+                momentum_decay=momentum_decay,
+                decoupled_weight_decay=False,
             )
         else:
             self.optimizer = torch.optim.AdamW(
-                self.model.parameters(), lr=lr, weight_decay=weight_decay
+                self.model.parameters(),
+                lr=lr,
+                betas=(beta1, beta2),
+                eps=eps,
+                weight_decay=weight_decay,
             )
 
         self.scheduler = build_lr_scheduler(self.optimizer, self.cfg_scheduler)
@@ -250,7 +285,7 @@ class Pump2DTrainer:
         self.loss_fn = CombinedLoss(base_loss, fields)
 
     def _init_physics_loss(self) -> None:
-        """Initializes ECOTWINPhysicsLoss weights, active status, and pre-allocated boundary tensors."""
+        """Initializes PhysicsLoss weights, active status, and pre-allocated boundary tensors."""
         cfg_phys = getattr(self.cfg_loss, "physics_terms", None)
 
         w_mass = float(
@@ -273,7 +308,7 @@ class Pump2DTrainer:
         self.physics_warmup_epochs = int(getattr(cfg_phys, "warmup_epochs", 20))
         self.physics_rampup_epochs = int(getattr(cfg_phys, "rampup_epochs", 30))
 
-        self.physics_loss = ECOTWINPhysicsLoss(
+        self.physics_loss = PhysicsLoss(
             weight_mass=w_mass,
             weight_wall=w_wall,
             weight_flux=w_flux,
@@ -346,7 +381,7 @@ class Pump2DTrainer:
         data_loss: torch.Tensor | None = None,
         epoch: int = 1,
     ) -> tuple[torch.Tensor, dict[str, float]]:
-        """Evaluates ECOTWINPhysicsLoss with dynamic scaling and curriculum weighting.
+        """Evaluates PhysicsLoss with dynamic scaling and curriculum weighting.
 
         Args:
             pred_vol: Predicted volume field tensor [p, vx, vy].
@@ -426,11 +461,31 @@ class Pump2DTrainer:
             print(f"Resuming from epoch: {self.start_epoch}")
 
         if "optimizer_state_dict" in ckpt:
+            raw_state = ckpt["optimizer_state_dict"]
             try:
-                self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+                self.optimizer.load_state_dict(raw_state)
                 print("Successfully restored optimizer momentum state.")
-            except Exception as e:
-                print(f"Notice: Could not restore optimizer momentum ({e})")
+            except Exception:
+                # Attempt cross-optimizer adaptation (e.g. AdamW checkpoint -> NAdam / NAdamW)
+                try:
+                    if isinstance(self.optimizer, torch.optim.NAdam):
+                        converted = copy.deepcopy(raw_state)
+                        for g in converted.get("param_groups", []):
+                            g.setdefault("momentum_decay", 0.004)
+                            g.setdefault("decoupled_weight_decay", True)
+                        for k, v in converted.get("state", {}).items():
+                            v.setdefault("mu_product", torch.tensor(1.0))
+                        self.optimizer.load_state_dict(converted)
+                        print(
+                            "Successfully transferred AdamW momentum and variance buffers into NAdamW."
+                        )
+                    else:
+                        raise
+                except Exception as e:
+                    self.optimizer.state.clear()
+                    print(
+                        f"Notice: Initializing fresh momentum buffers for {type(self.optimizer).__name__} ({e})."
+                    )
 
     # =========================================================================
     # Training & Validation Loops
@@ -950,8 +1005,23 @@ Examples:
         )
         return
 
-    overrides = sys.argv[1:]
-    cfg = load_hydra_config(overrides=overrides)
+    config_name = "config"
+    overrides = []
+    i = 1
+    while i < len(sys.argv):
+        arg = sys.argv[i]
+        if arg.startswith("--config-name="):
+            config_name = arg.split("=", 1)[1]
+        elif arg == "--config-name" and i + 1 < len(sys.argv):
+            config_name = sys.argv[i + 1]
+            i += 1
+        elif arg.startswith("config="):
+            config_name = arg.split("=", 1)[1]
+        else:
+            overrides.append(arg)
+        i += 1
+
+    cfg = load_hydra_config(config_name=config_name, overrides=overrides)
     trainer = Pump2DTrainer(cfg)
     trainer.fit()
 

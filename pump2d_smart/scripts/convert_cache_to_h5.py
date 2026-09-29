@@ -39,7 +39,9 @@ def convert_npz_to_h5(npz_path: str, h5_path: str, compression_level: int = 4) -
 
     t1 = time.time()
     h5_size_mb = os.path.getsize(h5_path) / 1e6
-    print(f"Successfully wrote HDF5: {h5_path} ({h5_size_mb:.2f} MB) in {t1 - t0:.2f}s!")
+    print(
+        f"Successfully wrote HDF5: {h5_path} ({h5_size_mb:.2f} MB) in {t1 - t0:.2f}s!"
+    )
 
     # Verify exact bit-for-bit match
     print("Verifying array equivalence...")
