@@ -73,14 +73,18 @@ ls -lh cache/pump2d_data_cache.h5
 ```
 
 ### 4.2 Automated 9-Experiment Execution
-To run all 9 experiments sequentially with automatic evaluation, metric aggregation, and plot generation:
+To run all 9 experiments:
 
 ```bash
-# Option A: Direct / Interactive GPU Run
-uv run python scripts/run_9_experiments_grid.py --lr 0.001
+# Option A: Parallel SLURM Job Array (9 GPUs in parallel, finishes in ~6 minutes!)
+# (Remember to edit -A <project_name> in the script)
+sbatch scripts/submit_lichtenberg_grid_array.sbatch
 
-# Option B: SLURM Batch Job
+# Option B: Sequential SLURM Batch Job (1 GPU, runs 9 sequentially, ~45-60 min)
 sbatch scripts/submit_grid_cluster.sbatch
+
+# Option C: Direct / Interactive GPU Run (e.g. salloc / interactive session)
+python scripts/run_9_experiments_grid.py --lr 0.001
 ```
 
 ### 4.3 Running an Individual Experiment

@@ -1,37 +1,50 @@
 #!/bin/bash
-#SBATCH --job-name=smart2d_grid
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --gpus=1
-#SBATCH --mem=16G
-#SBATCH --time=04:00:00
-#SBATCH --output=logs/slurm-%j.out
-#SBATCH --error=logs/slurm-%j.err
-
 # ==============================================================================
-# SLURM Job Script: 9-Experiment Grid for ECOTWIN SMART 2D Pump Surrogate
+# SLURM Submission Script for TU Darmstadt Lichtenberg II (HHLR) Cluster
+# Follows the exact official project template from submit_lichtenberg.sh
 # ==============================================================================
 
-set -e
-mkdir -p logs
+#SBATCH -J pump2d_smart_grid
+#SBATCH -A <project_name>
+#SBATCH --mail-type=END
+#SBATCH -e /work/scratch/%u/%x.err.%j
+#SBATCH -o /work/scratch/%u/%x.out.%j
+#
+# CPU specification
+#SBATCH -n 1                  # 1 process
+#SBATCH -c 4                  # 4 CPU cores per process ($SLURM_CPUS_PER_TASK)
+#SBATCH --mem-per-cpu=2G      # Hauptspeicher in MByte pro Rechenkern
+#SBATCH -t 02:00:00           # in hours:minutes (approx 45-60 min for 9 runs)
 
-echo "=== Job Started: $(date) on $(hostname) ==="
-echo "CUDA Devices available:"
-nvidia-smi || true
+# GPU specification
+#SBATCH --gres=gpu:1          # 1 GPU (generic "gpu:1" matches any available NVIDIA GPU)
 
-# Determine script root
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-cd "$PROJECT_DIR"
-echo "Project Directory: $PWD"
+# ------------------------------------------------------------------------------
+# Environment Modules (Lichtenberg official stack)
+# ------------------------------------------------------------------------------
+module purge
+module load gcc cuda python/3.13
 
-# Sync dependencies with uv
-echo "Syncing uv environment..."
-uv sync
+# Navigate to working directory
+cd "${SLURM_SUBMIT_DIR:-.}"
 
-# Run 9-experiment grid with verified stable learning rate 0.001
-echo "Starting 9-experiment grid execution (lr=0.001)..."
-uv run python scripts/run_9_experiments_grid.py --lr 0.001
+# Activate virtual environment (local or parent folder)
+[ -f ".venv/bin/activate" ] && source .venv/bin/activate || source ../.venv/bin/activate 2>/dev/null || true
 
-echo "=== Job Completed: $(date) ==="
+# Thread specification
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+
+# GPU verification output (appears in the .err file)
+nvidia-smi 1>&2
+
+export CUDA_NUM_DEVICES=$SLURM_GPUS_ON_NODE
+
+# ------------------------------------------------------------------------------
+# Payload: Run the 9-experiment grid with verified stable lr=0.001
+# ------------------------------------------------------------------------------
+echo "=== Starting 9-experiment grid execution on Lichtenberg II: $(date) ==="
+python scripts/run_9_experiments_grid.py --lr 0.001
+EXITCODE=$?
+
+echo "=== Grid execution finished with exit code $EXITCODE at: $(date) ==="
+exit $EXITCODE
