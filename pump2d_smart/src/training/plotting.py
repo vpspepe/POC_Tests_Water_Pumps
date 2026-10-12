@@ -345,6 +345,7 @@ def plot_field_contours(
     params = sample["params"].unsqueeze(0).to(device)
 
     extra_vol = feature_manager.extract_extra_features(vol_e)
+    d_out = vol_e[..., 2:3] if vol_e.shape[-1] >= 3 else None
     surf_c, _ = feature_manager.prepare_surface_queries({"geometry": geom}, device)
 
     model.eval()
@@ -356,6 +357,7 @@ def plot_field_contours(
             params,
             extra_surf_features=None,
             extra_vol_features=extra_vol,
+            d_out=d_out,
         )
 
     mean_vol = dataset.mean_vol_data
@@ -498,6 +500,7 @@ def plot_hq_head_predictions(
         )
 
         extra_vol = feature_manager.extract_extra_features(vol_e)
+        d_out = vol_e[..., 2:3] if vol_e.shape[-1] >= 3 else None
         surf_c, _ = feature_manager.prepare_surface_queries({"geometry": geom}, device)
 
         with torch.no_grad():
@@ -508,6 +511,7 @@ def plot_hq_head_predictions(
                 params_tensor,
                 extra_surf_features=None,
                 extra_vol_features=extra_vol,
+                d_out=d_out,
             )
 
         # 3. De-normalize SMART volume outputs back to physical units

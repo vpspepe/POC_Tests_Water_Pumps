@@ -17,7 +17,9 @@ import matplotlib
 matplotlib.use("Agg")
 import numpy as np
 import torch
+import torch.nn as nn
 from smart.smart.models.smart.smart import SMART
+from src.models.ecotwin_smart import EcotwinSMART
 
 from src.data.dataset import Pump2DDataset
 from src.training.calculate_pump_heads import compute_full_pump_metrics
@@ -40,7 +42,8 @@ def load_model_from_checkpoint(
     extra_query_dim: int = 2,
     surface_channels: int = 0,
     volume_channels: int = 3,
-) -> tuple[SMART, dict[str, Any]]:
+    p_target: float = 0.0,
+) -> tuple[nn.Module, dict[str, Any]]:
     """Loads and configures SMART model from a checkpoint, handling legacy architectures."""
     checkpoint = torch.load(checkpoint_path, map_location=device)
     state_dict = checkpoint.get("model_state_dict", checkpoint)
@@ -65,7 +68,7 @@ def load_model_from_checkpoint(
             blocks.add(k.split(".")[1])
     num_blocks = len(blocks) if blocks else m_cfg.get("num_encoder_decoder_blocks", 2)
 
-    model = SMART(
+    base_model = SMART(
         spatial_dim=int(spatial_dim),
         surface_channels=surface_channels,
         volume_channels=volume_channels,
@@ -82,7 +85,22 @@ def load_model_from_checkpoint(
     if any("feature_projection" in k for k in state_dict.keys()) and not any(
         "fusion_mlp" in k for k in state_dict.keys()
     ):
-        model.use_legacy_feature_proj = True
+        base_model.use_legacy_feature_proj = True
+
+    # If the state_dict comes from EcotwinSMART, the keys will start with "smart."
+    is_ecotwin = any(k.startswith("smart.") for k in state_dict.keys())
+    
+    if is_ecotwin:
+        # Wrap it with default targets, we will just load the state_dict over it
+        model = EcotwinSMART(
+            smart_model=base_model,
+            use_pressure_constraint=m_cfg.get("use_pressure_constraint", True),
+            pressure_target=p_target,
+            sdf_outlet_index=extra_query_dim - 1 if extra_query_dim > 2 else -1,
+        )
+    else:
+        # For backwards compatibility with old checkpoints
+        model = base_model
 
     model.load_state_dict(state_dict, strict=False)
     model = model.to(device)
@@ -123,6 +141,7 @@ def evaluate_model(
         volume_channels=int(getattr(cfg_features, "volume_channels", 3)),
         use_sdf_blades=bool(getattr(cfg_features, "use_sdf_blades", True)),
         use_sdf_mrf=bool(getattr(cfg_features, "use_sdf_mrf", True)),
+        use_sdf_outlet=bool(getattr(cfg_features, "use_sdf_outlet", True)),
     )
 
     chk_dir = getattr(cfg_training, "save_model_dir", "./checkpoints")
@@ -130,20 +149,14 @@ def evaluate_model(
     if not os.path.exists(ckpt_file):
         raise FileNotFoundError(f"Checkpoint not found at: {ckpt_file}")
 
-    print(f"\n--- Loading Checkpoint: {ckpt_file} ---")
-    model, _ = load_model_from_checkpoint(
-        checkpoint_path=ckpt_file,
-        device=device,
-        default_cfg_model=cfg_model,
-        extra_query_dim=feature_manager.extra_query_dim,
-        surface_channels=feature_manager.surface_channels,
-        volume_channels=feature_manager.volume_channels,
-    )
-
-    test_split = getattr(cfg_data, "test_split", 0.5)
-    test_split_val = float(test_split) if test_split is not None else None
     n_train = getattr(cfg_data, "n_train", None)
-    n_train_val = int(n_train) if n_train is not None else None
+    test_split = getattr(cfg_data, "test_split", None)
+    if n_train is not None:
+        test_split_val = None
+        n_train_val = int(n_train)
+    else:
+        test_split_val = float(test_split) if test_split is not None else 0.5
+        n_train_val = None
 
     print("Loading test dataset...")
     test_dataset = Pump2DDataset(
@@ -155,6 +168,23 @@ def evaluate_model(
         n_train=n_train_val,
         sparse_hq_split=bool(getattr(cfg_data, "sparse_hq_split", True)),
         boundary_only=bool(getattr(cfg_data, "boundary_only", False)),
+    )
+    
+    # We need the normalized target pressure for the EcotwinSMART wrapper
+    try:
+        p_target = (100000.0 - test_dataset.mean_vol_data[0]) / test_dataset.std_vol_data[0]
+    except AttributeError:
+        p_target = 0.0
+
+    print(f"\n--- Loading Checkpoint: {ckpt_file} ---")
+    model, _ = load_model_from_checkpoint(
+        checkpoint_path=ckpt_file,
+        device=device,
+        default_cfg_model=cfg_model,
+        extra_query_dim=feature_manager.extra_query_dim,
+        surface_channels=feature_manager.surface_channels,
+        volume_channels=feature_manager.volume_channels,
+        p_target=p_target,
     )
 
     out_dir = save_dir or pjoin(
@@ -199,6 +229,7 @@ def evaluate_model(
                 params = sample["params"].unsqueeze(0).to(device)
 
                 extra_vol = feature_manager.extract_extra_features(vol_e)
+                d_out = vol_e[..., 2:3] if vol_e.shape[-1] >= 3 else None
                 surf_c, _ = feature_manager.prepare_surface_queries(
                     {"geometry": geom}, device
                 )
@@ -210,6 +241,7 @@ def evaluate_model(
                     params,
                     extra_surf_features=None,
                     extra_vol_features=extra_vol,
+                    d_out=d_out,
                 )
 
                 truth_vol = vol_d_norm.numpy() * std_vol + mean_vol
@@ -356,6 +388,26 @@ def evaluate_model(
             f"Head Rel Error: {head_metrics['val_Head_Rel_Error_pct']:.2f}%"
         )
 
+    # Save metrics JSON to out_dir
+    try:
+        import json
+
+        def _json_serializable(obj):
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            if isinstance(obj, (np.float32, np.float64)):
+                return float(obj)
+            if isinstance(obj, (np.int32, np.int64)):
+                return int(obj)
+            return str(obj)
+
+        metrics_file = pjoin(out_dir, "eval_metrics.json")
+        with open(metrics_file, "w") as f:
+            json.dump(results, f, indent=2, default=_json_serializable)
+        print(f"Saved evaluation metrics to: {metrics_file}")
+    except Exception as e:
+        print(f"Notice: Failed to save eval_metrics.json ({e})")
+
     print(f"\nAll evaluation artifacts saved to: {out_dir}")
     return results
 
@@ -363,6 +415,12 @@ def evaluate_model(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Evaluate SMART 2D Pump neural surrogate checkpoint."
+    )
+    parser.add_argument(
+        "--config-name",
+        type=str,
+        default="config",
+        help="Hydra config file name (e.g. local_15pts or local_train).",
     )
     parser.add_argument(
         "--checkpoint",
@@ -392,9 +450,24 @@ def main() -> None:
         action="store_true",
         help="Skip generating H-Q pump head curves.",
     )
+    parser.add_argument(
+        "overrides",
+        nargs="*",
+        help="Any Hydra key=value overrides.",
+    )
     args = parser.parse_args()
 
+    try:
+        config = load_hydra_config(
+            config_name=args.config_name,
+            overrides=args.overrides if args.overrides else None,
+        )
+    except Exception as e:
+        print(f"Warning: Failed to load hydra config '{args.config_name}': {e}. Using defaults.")
+        config = None
+
     evaluate_model(
+        config=config,
         checkpoint_path=args.checkpoint,
         save_dir=args.output_dir,
         sample_idx=args.sample_idx,

@@ -22,6 +22,7 @@ class ModelConfig:
     pos_scale_factor: float = 1000.0
     dropout: float = 0.0
     subregion_size: int = 1000
+    use_pressure_constraint: bool = True
 
 
 @dataclass
@@ -88,6 +89,7 @@ class FeaturesConfig:
     volume_channels: int = 3
     use_sdf_blades: bool = True
     use_sdf_mrf: bool = True
+    use_sdf_outlet: bool = True
 
 
 @dataclass

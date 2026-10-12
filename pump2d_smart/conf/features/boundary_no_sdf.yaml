@@ -4,3 +4,4 @@ surface_channels: 0
 volume_channels: 3
 use_sdf_blades: false
 use_sdf_mrf: false
+use_sdf_outlet: false

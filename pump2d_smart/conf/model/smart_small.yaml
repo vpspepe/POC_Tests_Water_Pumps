@@ -10,3 +10,4 @@ num_heads: 4
 pos_scale_factor: 1000.0
 dropout: 0.0
 subregion_size: 1000
+use_pressure_constraint: true

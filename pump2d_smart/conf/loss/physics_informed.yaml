@@ -12,5 +12,4 @@ physics_terms:
   wall_weight: 0.0
   scaling: "relative"
   warmup_epochs: 20
-  rampup_epochs: 30
-
+  rampup_epochs: 15

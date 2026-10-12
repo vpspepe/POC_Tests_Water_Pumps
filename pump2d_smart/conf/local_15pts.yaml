@@ -1,0 +1,35 @@
+defaults:
+  - config
+  - _self_
+  - override data: boundary_only
+  - override features: boundary_no_sdf
+  - override loss: physics_informed
+  - override optimizer: nadamw
+
+exp_name: "local_hard_pressure_flux_15pts"
+resume_from_checkpoint: ""
+
+data:
+  n_train: 15
+
+optimizer:
+  learning_rate: 1e-3
+
+lr_scheduler:
+  patience: 15
+
+training:
+  epochs: 200
+  batch_size: 2
+  num_workers: 2
+  device: "cuda"
+
+model:
+  use_pressure_constraint: true
+
+loss:
+  physics_terms:
+    mass_weight: 0.0
+    flux_weight: 0.01
+    outlet_p_weight: 0.0
+    wall_weight: 0.0

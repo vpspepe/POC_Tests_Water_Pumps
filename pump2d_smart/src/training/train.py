@@ -17,6 +17,7 @@ import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
 from smart.smart.models.smart.smart import SMART
+from src.models.ecotwin_smart import EcotwinSMART
 from torch.utils.data import DataLoader
 
 from src.data.dataset import Pump2DDataset
@@ -117,6 +118,7 @@ class Pump2DTrainer:
             volume_channels=int(getattr(self.cfg_features, "volume_channels", 3)),
             use_sdf_blades=bool(getattr(self.cfg_features, "use_sdf_blades", True)),
             use_sdf_mrf=bool(getattr(self.cfg_features, "use_sdf_mrf", True)),
+            use_sdf_outlet=bool(getattr(self.cfg_features, "use_sdf_outlet", True)),
         )
         self.extra_query_dim = self.feature_manager.extra_query_dim
 
@@ -177,7 +179,7 @@ class Pump2DTrainer:
 
     def _init_model(self) -> None:
         """Instantiates the SMART neural operator model and counts parameters."""
-        self.model = SMART(
+        base_model = SMART(
             spatial_dim=int(getattr(self.cfg_model, "spatial_dim", 2)),
             surface_channels=self.feature_manager.surface_channels,
             volume_channels=self.feature_manager.volume_channels,
@@ -197,6 +199,29 @@ class Pump2DTrainer:
             dropout=float(getattr(self.cfg_model, "dropout", 0.0)),
             extra_query_dim=self.extra_query_dim,
             subregion_size=int(getattr(self.cfg_model, "subregion_size", 1000)),
+        )
+
+        use_pressure_constraint = bool(getattr(self.cfg_model, "use_pressure_constraint", True))
+        
+        # We need the normalized target pressure
+        try:
+            p_target = (100000.0 - self.train_dataset.mean_vol_data[0]) / self.train_dataset.std_vol_data[0]
+        except AttributeError:
+            p_target = 0.0
+
+        # SDF outlet index is the last active index
+        sdf_outlet_index = self.extra_query_dim - 1 if self.feature_manager.use_sdf_outlet else -1
+
+        # Determine pressure channel index from loss configuration
+        vol_fields = list(getattr(self.config.loss, "volume_fields", ["pressure", "velocity_x", "velocity_y"]))
+        p_channel_idx = vol_fields.index("pressure") if "pressure" in vol_fields else 0
+
+        self.model = EcotwinSMART(
+            smart_model=base_model,
+            use_pressure_constraint=use_pressure_constraint,
+            pressure_target=p_target,
+            sdf_outlet_index=sdf_outlet_index,
+            pressure_channel_index=p_channel_idx,
         ).to(self.device)
 
         self.model.initialize_weights()
@@ -405,6 +430,17 @@ class Pump2DTrainer:
         u_out_edges = 0.5 * (
             u_out_nodes[self.e_out_tensor[:, 0]] + u_out_nodes[self.e_out_tensor[:, 1]]
         )
+        
+        norm_in_edges = 0.5 * (
+            self.norm_in_tensor[self.e_in_tensor[:, 0]] + self.norm_in_tensor[self.e_in_tensor[:, 1]]
+        )
+        # Normalize them just in case
+        norm_in_edges = norm_in_edges / torch.linalg.norm(norm_in_edges, dim=-1, keepdim=True)
+        
+        norm_out_edges = 0.5 * (
+            self.norm_out_tensor[self.e_out_tensor[:, 0]] + self.norm_out_tensor[self.e_out_tensor[:, 1]]
+        )
+        norm_out_edges = norm_out_edges / torch.linalg.norm(norm_out_edges, dim=-1, keepdim=True)
 
         p_out_pred = pred_vol[..., self.idx_out_tensor, 0]
 
@@ -413,10 +449,10 @@ class Pump2DTrainer:
             vol_u_y=pred_vol[..., 2],
             vol_coords=vol_coords,
             inlet_u_pred=u_in_edges,
-            inlet_normals=self.norm_in_tensor,
+            inlet_normals=norm_in_edges,
             inlet_weights=self.weights_in_tensor,
             outlet_u_pred=u_out_edges,
-            outlet_normals=self.norm_out_tensor,
+            outlet_normals=norm_out_edges,
             outlet_weights=self.weights_out_tensor,
             q_in=0.0,
             outlet_p_pred=p_out_pred,
@@ -440,7 +476,17 @@ class Pump2DTrainer:
 
         print(f"Resuming weights from checkpoint: {resume_path}")
         ckpt = torch.load(resume_path, map_location=self.device)
-        self.model.load_state_dict(ckpt["model_state_dict"])
+        state_dict = ckpt.get("model_state_dict", ckpt)
+        model_has_prefix = any(k.startswith("smart.") for k in self.model.state_dict().keys())
+        ckpt_has_prefix = any(k.startswith("smart.") for k in state_dict.keys())
+        
+        if model_has_prefix and not ckpt_has_prefix:
+            state_dict = {f"smart.{k}": v for k, v in state_dict.items()}
+        elif not model_has_prefix and ckpt_has_prefix:
+            state_dict = {k.replace("smart.", ""): v for k, v in state_dict.items()}
+
+        load_res = self.model.load_state_dict(state_dict, strict=False)
+        print(f"Model state restored. Missing keys: {len(load_res.missing_keys)}, Unexpected keys: {len(load_res.unexpected_keys)}")
 
         if "best_score" in ckpt:
             self.early_stopping.best_score = float(ckpt["best_score"])
@@ -519,6 +565,7 @@ class Pump2DTrainer:
         params = batch["params"].to(self.device)
 
         extra_features = self.feature_manager.extract_extra_features(vol_e)
+        d_out = vol_e[..., 2:3] if vol_e.shape[-1] >= 3 else None
         surf_c, surf_d = self.feature_manager.prepare_surface_queries(
             batch, self.device
         )
@@ -526,11 +573,11 @@ class Pump2DTrainer:
         if requires_grad_coords and torch.cuda.is_available():
             with torch.nn.attention.sdpa_kernel([torch.nn.attention.SDPBackend.MATH]):
                 pred_surf, pred_vol = self.model(
-                    geo, surf_c, vol_c, params, extra_query_features=extra_features
+                    geo, surf_c, vol_c, params, extra_query_features=extra_features, d_out=d_out
                 )
         else:
             pred_surf, pred_vol = self.model(
-                geo, surf_c, vol_c, params, extra_query_features=extra_features
+                geo, surf_c, vol_c, params, extra_query_features=extra_features, d_out=d_out
             )
 
         return pred_surf, pred_vol, surf_d, vol_d, vol_c
@@ -639,6 +686,7 @@ class Pump2DTrainer:
             params = sample["params"].unsqueeze(0).to(self.device)
 
             extra_vol = self.feature_manager.extract_extra_features(vol_e)
+            d_out = vol_e[..., 2:3] if vol_e.shape[-1] >= 3 else None
             surf_c, _ = self.feature_manager.prepare_surface_queries(
                 {"geometry": geo}, self.device
             )
@@ -651,6 +699,7 @@ class Pump2DTrainer:
                     params,
                     extra_surf_features=None,
                     extra_vol_features=extra_vol,
+                    d_out=d_out,
                 )
 
             # De-normalize volume predictions back to physical units

@@ -19,6 +19,7 @@ class FeatureManager:
         volume_channels: int = 3,
         use_sdf_blades: bool = True,
         use_sdf_mrf: bool = True,
+        use_sdf_outlet: bool = True,
     ) -> None:
         """Initializes the feature manager and configures active feature slices.
 
@@ -28,6 +29,7 @@ class FeatureManager:
             volume_channels: Number of volume output channels (pressure, vx, vy).
             use_sdf_blades: If True, passes SDF to impeller blades.
             use_sdf_mrf: If True, passes SDF to MRF rotating interface circle.
+            use_sdf_outlet: If True, passes SDF to outlet boundary.
         """
         self.predict_surface: bool = predict_surface
         self.surface_channels: int = surface_channels if predict_surface else 0
@@ -35,6 +37,7 @@ class FeatureManager:
 
         self.use_sdf_blades: bool = use_sdf_blades
         self.use_sdf_mrf: bool = use_sdf_mrf
+        self.use_sdf_outlet: bool = use_sdf_outlet
 
         # Determine active SDF channel indices
         self.active_sdf_indices: list[int] = []
@@ -42,6 +45,8 @@ class FeatureManager:
             self.active_sdf_indices.append(0)  # Channel 0: SDF to blades
         if self.use_sdf_mrf:
             self.active_sdf_indices.append(1)  # Channel 1: SDF to MRF
+        if self.use_sdf_outlet:
+            self.active_sdf_indices.append(2)  # Channel 2: SDF to Outlet
 
         self.extra_query_dim: int = len(self.active_sdf_indices)
 

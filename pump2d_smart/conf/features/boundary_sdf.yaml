@@ -1,0 +1,7 @@
+# @package features
+predict_surface: false
+surface_channels: 0
+volume_channels: 3
+use_sdf_blades: true
+use_sdf_mrf: true
+use_sdf_outlet: true

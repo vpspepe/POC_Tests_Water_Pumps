@@ -233,8 +233,8 @@ class Pump2DDataset(Dataset[Pump2DSample]):
         vol_points = vol_points_tensor.cpu().numpy()
 
         # Precompute SDFs for all volume coords
-        sdf_mrf, sdf_blades = processor.compute_sdfs(vol_points_tensor, batch_size=2000)
-        vol_extra = torch.column_stack([sdf_blades, sdf_mrf]).cpu().numpy()
+        sdf_mrf, sdf_blades, sdf_outlet = processor.compute_sdfs(vol_points_tensor, batch_size=2000)
+        vol_extra = torch.column_stack([sdf_blades, sdf_mrf, sdf_outlet]).cpu().numpy()
 
         return vol_points, vol_extra
 
@@ -876,7 +876,7 @@ class Pump2DDataset(Dataset[Pump2DSample]):
         for s in self.samples:
             s["volume_coords"] = s["volume_coords"][bnd_indices]
             s["volume_data"] = s["volume_data"][bnd_indices]
-            s["volume_extra"] = np.empty((len(bnd_indices), 0), dtype=np.float32)
+            s["volume_extra"] = s["volume_extra"][bnd_indices]
 
         # Re-index boundary mapping into the sliced query points
         self.boundary_data["idx_in"] = np.arange(0, n_in, dtype=np.int64)
@@ -891,7 +891,7 @@ class Pump2DDataset(Dataset[Pump2DSample]):
         self._reconstruct_probes_from_boundary_data()
         print(
             f"Boundary-Only mode active: Sliced queries to {len(bnd_indices)} surface points "
-            f"(Inlet: {n_in}, Outlet: {n_out}, Blades: {n_blades}) | No extra SDF queries."
+            f"(Inlet: {n_in}, Outlet: {n_out}, Blades: {n_blades})."
         )
 
     def _compute_normalization_stats(self) -> None:

@@ -120,6 +120,7 @@ def calculate_validation_metrics(
         params = sample["params"].unsqueeze(0).to(device)
 
         extra_vol = feature_manager.extract_extra_features(vol_e)
+        d_out = vol_e[..., 2:3] if vol_e.shape[-1] >= 3 else None
         surf_c, _ = feature_manager.prepare_surface_queries({"geometry": geom}, device)
 
         with torch.no_grad():
@@ -130,6 +131,7 @@ def calculate_validation_metrics(
                 params,
                 extra_surf_features=None,
                 extra_vol_features=extra_vol,
+                d_out=d_out,
             )
 
         truth_vol_phys = vol_d_norm.numpy() * std_vol + mean_vol

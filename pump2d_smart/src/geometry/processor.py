@@ -238,6 +238,16 @@ class Pump2DGeometryProcessor:
         starts10, ends10 = self._clean_circular_boundary(self.bodies[10])
         self.starts_dict["inlet"] = starts10
         self.ends_dict["inlet"] = ends10
+        # 6. Outlet
+        outlet_poly = self.outlet_grid.extract_surface(algorithm="dataset_surface")
+        pts_outlet = outlet_poly.points[:, :2]
+        lines_outlet = outlet_poly.lines.reshape(-1, 3)[:, 1:]
+        self.starts_dict["outlet"] = torch.tensor(
+            pts_outlet[lines_outlet[:, 0]], dtype=torch.float32
+        )
+        self.ends_dict["outlet"] = torch.tensor(
+            pts_outlet[lines_outlet[:, 1]], dtype=torch.float32
+        )
         print("Boundary extraction completed successfully.")
 
     def get_full_pump_geometry(self) -> np.ndarray:
@@ -261,15 +271,15 @@ class Pump2DGeometryProcessor:
 
     def compute_sdfs(
         self, query_pts: torch.Tensor, batch_size: int = 2000
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Computes Signed Distance Fields for blades and MRF interfaces in PyTorch.
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Computes Signed Distance Fields for blades, MRF interfaces, and outlet in PyTorch.
 
         Args:
             query_pts: Coordinates tensor of shape (N, 2) to evaluate.
             batch_size: Evaluation chunk size for GPU VRAM stability.
 
         Returns:
-            Tuple of [SDF_MRF, SDF_blades] PyTorch Tensors of shape (N,).
+            Tuple of [SDF_MRF, SDF_blades, SDF_outlet] PyTorch Tensors of shape (N,).
         """
         # Compute SDF to MRF circle
         mrf_starts = self.starts_dict["mrf"]
@@ -287,7 +297,15 @@ class Pump2DGeometryProcessor:
             query_pts, blades_starts, blades_ends, batch_size, self.device
         )
 
-        return sdf_mrf.cpu(), sdf_blades.cpu()
+        # Compute SDF to Outlet
+        outlet_starts = self.starts_dict["outlet"]
+        outlet_ends = self.ends_dict["outlet"]
+        print("Computing PyTorch SDF for Outlet...")
+        sdf_outlet = compute_sdf_pytorch(
+            query_pts, outlet_starts, outlet_ends, batch_size, self.device
+        )
+
+        return sdf_mrf.cpu(), sdf_blades.cpu(), sdf_outlet.cpu()
 
     def is_valid_fluid_point(
         self, query_pts: torch.Tensor, batch_size: int = 2000
