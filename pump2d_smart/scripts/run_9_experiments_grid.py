@@ -49,6 +49,13 @@ EXPERIMENTS = [
         "label": "5 Pts | Hard BC",
     },
     {
+        "exp_name": "grid_5pts_mse_flux",
+        "n_train": 5,
+        "use_pressure_constraint": False,
+        "flux_weight": 0.01,
+        "label": "5 Pts | MSE + Flux",
+    },
+    {
         "exp_name": "grid_5pts_hard_bc_flux",
         "n_train": 5,
         "use_pressure_constraint": True,
@@ -69,6 +76,13 @@ EXPERIMENTS = [
         "use_pressure_constraint": True,
         "flux_weight": 0.0,
         "label": "10 Pts | Hard BC",
+    },
+    {
+        "exp_name": "grid_10pts_mse_flux",
+        "n_train": 10,
+        "use_pressure_constraint": False,
+        "flux_weight": 0.01,
+        "label": "10 Pts | MSE + Flux",
     },
     {
         "exp_name": "grid_10pts_hard_bc_flux",
@@ -93,6 +107,13 @@ EXPERIMENTS = [
         "label": "15 Pts | Hard BC",
     },
     {
+        "exp_name": "grid_15pts_mse_flux",
+        "n_train": 15,
+        "use_pressure_constraint": False,
+        "flux_weight": 0.01,
+        "label": "15 Pts | MSE + Flux",
+    },
+    {
         "exp_name": "grid_15pts_hard_bc_flux",
         "n_train": 15,
         "use_pressure_constraint": True,
@@ -102,7 +123,13 @@ EXPERIMENTS = [
 ]
 
 
-def run_single_experiment(spec: dict[str, Any], lr: float = 0.001) -> dict[str, Any]:
+def run_single_experiment(
+    spec: dict[str, Any],
+    lr: float = 0.001,
+    epochs: int = 300,
+    outlet_pressure_target: float = 100000.0,
+    resume_path: str = "",
+) -> dict[str, Any]:
     """Runs training and evaluation for a single experiment via isolated subprocesses."""
     exp_name = spec["exp_name"]
     n_train = spec["n_train"]
@@ -112,29 +139,32 @@ def run_single_experiment(spec: dict[str, Any], lr: float = 0.001) -> dict[str, 
 
     print("\n" + "=" * 80)
     print(f"RUNNING EXPERIMENT: {exp_name} ({label})")
-    print(f"Params: n_train={n_train}, Hard BC={use_hard_bc}, Flux Weight={flux_weight}, LR={lr}")
+    print(f"Params: n_train={n_train}, Hard BC={use_hard_bc}, Flux Weight={flux_weight}, LR={lr}, Epochs={epochs}, Outlet P={outlet_pressure_target} Pa, Resume={resume_path or 'None'}")
     print("=" * 80 + "\n", flush=True)
 
     # 1. Launch Training Subprocess
     train_cmd = [
-        "uv", "run", "python", "-m", "src.training.train",
+        sys.executable, "-m", "src.training.train",
         "--config-name=local_train",
         f"exp_name={exp_name}",
         f"data.n_train={n_train}",
         f"optimizer.learning_rate={lr}",
         f"model.use_pressure_constraint={'true' if use_hard_bc else 'false'}",
+        f"model.outlet_pressure_target={outlet_pressure_target}",
         f"loss.physics_terms.flux_weight={flux_weight}",
         "loss.physics_terms.mass_weight=0.0",
         "loss.physics_terms.outlet_p_weight=0.0",
         "loss.physics_terms.wall_weight=0.0",
         "loss.physics_terms.warmup_epochs=20",
         "loss.physics_terms.rampup_epochs=15",
-        "training.epochs=200",
+        f"training.epochs={epochs}",
         "early_stopping.patience=40",
         "lr_scheduler.patience=15",
         "tracking.target=remote",
         "tracking.experiment_name=Pump2D_SMART_Surrogate",
     ]
+    if resume_path:
+        train_cmd.append(f"resume_from_checkpoint={resume_path}")
 
     t0 = time.time()
     res = subprocess.run(train_cmd, cwd=WORKSPACE_DIR)
@@ -151,6 +181,8 @@ def run_single_experiment(spec: dict[str, Any], lr: float = 0.001) -> dict[str, 
         fallback = pjoin(ckpt_dir, "best_smart_pump2d.pt")
         if os.path.exists(fallback):
             best_checkpoint = fallback
+        elif resume_path and os.path.exists(resume_path):
+            best_checkpoint = resume_path
         else:
             raise FileNotFoundError(f"No checkpoint found in {ckpt_dir}")
     else:
@@ -164,13 +196,14 @@ def run_single_experiment(spec: dict[str, Any], lr: float = 0.001) -> dict[str, 
     os.makedirs(ARTIFACT_DIR, exist_ok=True)
 
     eval_cmd = [
-        "uv", "run", "python", "-m", "src.training.evaluate",
+        sys.executable, "-m", "src.training.evaluate",
         "--config-name=local_train",
         f"--checkpoint={best_checkpoint}",
         f"--output-dir={exp_out_dir}",
         f"exp_name={exp_name}",
         f"data.n_train={n_train}",
         f"model.use_pressure_constraint={'true' if use_hard_bc else 'false'}",
+        f"model.outlet_pressure_target={outlet_pressure_target}",
         f"loss.physics_terms.flux_weight={flux_weight}",
     ]
 
@@ -211,6 +244,7 @@ def run_single_experiment(spec: dict[str, Any], lr: float = 0.001) -> dict[str, 
         "label": label,
         "n_train": n_train,
         "use_pressure_constraint": use_hard_bc,
+        "outlet_pressure_target_Pa": outlet_pressure_target,
         "flux_weight": flux_weight,
         "learning_rate": lr,
         "training_time_s": round(train_duration, 2),
@@ -247,9 +281,12 @@ def run_single_experiment(spec: dict[str, Any], lr: float = 0.001) -> dict[str, 
 
 def main() -> None:
     import argparse
-    parser = argparse.ArgumentParser(description="Run 9-experiment grid for SMART 2D Pump.")
+    parser = argparse.ArgumentParser(description="Run experiment grid for SMART 2D Pump.")
     parser.add_argument("--lr", type=float, default=0.001, help="Initial learning rate (default 0.001)")
     parser.add_argument("--filter", type=str, default="", help="Filter experiment names by substring")
+    parser.add_argument("--epochs", type=int, default=300, help="Number of training epochs (default 300)")
+    parser.add_argument("--outlet-pressure", type=float, default=100000.0, help="Outlet pressure target in Pa (default 100000.0)")
+    parser.add_argument("--resume", type=str, default="", help="Path to checkpoint to resume training from")
     args = parser.parse_args()
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -274,7 +311,13 @@ def main() -> None:
             continue
 
         try:
-            record = run_single_experiment(spec, lr=args.lr)
+            record = run_single_experiment(
+                spec,
+                lr=args.lr,
+                epochs=args.epochs,
+                outlet_pressure_target=args.outlet_pressure,
+                resume_path=args.resume,
+            )
             all_results.append(record)
             with open(summary_file, "w") as f:
                 json.dump(all_results, f, indent=2)

@@ -203,10 +203,11 @@ class Pump2DTrainer:
 
         use_pressure_constraint = bool(getattr(self.cfg_model, "use_pressure_constraint", True))
         
-        # We need the normalized target pressure
+        # Configurable target outlet pressure [Pa] (normalized to dataset stats)
+        target_p_pa = float(getattr(self.cfg_model, "outlet_pressure_target", 100000.0))
         try:
-            p_target = (100000.0 - self.train_dataset.mean_vol_data[0]) / self.train_dataset.std_vol_data[0]
-        except AttributeError:
+            p_target = (target_p_pa - self.train_dataset.mean_vol_data[0]) / self.train_dataset.std_vol_data[0]
+        except (AttributeError, IndexError):
             p_target = 0.0
 
         # SDF outlet index is the last active index
@@ -431,16 +432,21 @@ class Pump2DTrainer:
             u_out_nodes[self.e_out_tensor[:, 0]] + u_out_nodes[self.e_out_tensor[:, 1]]
         )
         
-        norm_in_edges = 0.5 * (
-            self.norm_in_tensor[self.e_in_tensor[:, 0]] + self.norm_in_tensor[self.e_in_tensor[:, 1]]
-        )
-        # Normalize them just in case
-        norm_in_edges = norm_in_edges / torch.linalg.norm(norm_in_edges, dim=-1, keepdim=True)
-        
-        norm_out_edges = 0.5 * (
-            self.norm_out_tensor[self.e_out_tensor[:, 0]] + self.norm_out_tensor[self.e_out_tensor[:, 1]]
-        )
-        norm_out_edges = norm_out_edges / torch.linalg.norm(norm_out_edges, dim=-1, keepdim=True)
+        if self.norm_in_tensor.shape[0] == self.e_in_tensor.shape[0]:
+            norm_in_edges = self.norm_in_tensor
+        else:
+            norm_in_edges = 0.5 * (
+                self.norm_in_tensor[self.e_in_tensor[:, 0]] + self.norm_in_tensor[self.e_in_tensor[:, 1]]
+            )
+            norm_in_edges = norm_in_edges / torch.linalg.norm(norm_in_edges, dim=-1, keepdim=True)
+
+        if self.norm_out_tensor.shape[0] == self.e_out_tensor.shape[0]:
+            norm_out_edges = self.norm_out_tensor
+        else:
+            norm_out_edges = 0.5 * (
+                self.norm_out_tensor[self.e_out_tensor[:, 0]] + self.norm_out_tensor[self.e_out_tensor[:, 1]]
+            )
+            norm_out_edges = norm_out_edges / torch.linalg.norm(norm_out_edges, dim=-1, keepdim=True)
 
         p_out_pred = pred_vol[..., self.idx_out_tensor, 0]
 
@@ -876,10 +882,18 @@ class Pump2DTrainer:
             print(f"Notice: Error generating post-training figures ({e})")
 
     def _setup_remote_tracking(self) -> None:
-        """Initializes DAGsHub remote MLflow tracking."""
+        """Initializes DAGsHub remote MLflow tracking with automatic retry and local fallback."""
         repo_owner = getattr(self.cfg_tracking, "repo_owner", "victor101pepe")
         repo_name = getattr(self.cfg_tracking, "repo_name", "POC_Tests_Water_Pumps")
-        dagshub.init(repo_owner=repo_owner, repo_name=repo_name, mlflow=True)
+        for attempt in range(3):
+            try:
+                dagshub.init(repo_owner=repo_owner, repo_name=repo_name, mlflow=True)
+                return
+            except Exception as e:
+                print(f"Warning: DAGsHub init attempt {attempt + 1}/3 failed ({e}). Retrying in 5s...")
+                time.sleep(5)
+        print("Warning: Could not connect to DAGsHub after 3 attempts. Falling back to local MLflow tracking.")
+        self._setup_local_tracking()
 
     def _setup_local_tracking(self) -> None:
         """Connects directly to local MLflow tracking URI."""
@@ -926,20 +940,23 @@ class Pump2DTrainer:
         config_dict, yaml_content = self._persist_and_export_config()
 
         if tracking_enabled:
-            # Set DVC pointer tags in MLflow
-            mlflow.set_tag("dvc_pointer", dvc_pointer)
-            mlflow.set_tag("model_filename", model_filename)
+            try:
+                # Set DVC pointer tags in MLflow
+                mlflow.set_tag("dvc_pointer", dvc_pointer)
+                mlflow.set_tag("model_filename", model_filename)
 
-            flat_params = self._flatten_config_for_mlflow(config_dict)
-            flat_params["total_params"] = self.total_params
-            flat_params["trainable_params"] = self.trainable_params
-            flat_params["extra_query_dim"] = self.extra_query_dim
-            flat_params["dvc_pointer"] = dvc_pointer
-            flat_params["model_filename"] = model_filename
-            mlflow.log_params({k: str(v)[:490] for k, v in flat_params.items()})
+                flat_params = self._flatten_config_for_mlflow(config_dict)
+                flat_params["total_params"] = self.total_params
+                flat_params["trainable_params"] = self.trainable_params
+                flat_params["extra_query_dim"] = self.extra_query_dim
+                flat_params["dvc_pointer"] = dvc_pointer
+                flat_params["model_filename"] = model_filename
+                mlflow.log_params({k: str(v)[:490] for k, v in flat_params.items()})
 
-            mlflow.log_dict(config_dict, artifact_file="config/config.json")
-            mlflow.log_text(yaml_content, artifact_file="config/hydra_config.yaml")
+                mlflow.log_dict(config_dict, artifact_file="config/config.json")
+                mlflow.log_text(yaml_content, artifact_file="config/hydra_config.yaml")
+            except Exception as e:
+                print(f"Notice: Failed to log initial metadata to MLflow ({e})")
 
             # 2. Initial Dataset H-Q Split Visualization directly to MLflow
             try:
@@ -997,7 +1014,10 @@ class Pump2DTrainer:
 
                     # 2. Log ALL metrics to MLflow
                     if tracking_enabled:
-                        mlflow.log_metrics(epoch_metrics, step=epoch)
+                        try:
+                            mlflow.log_metrics(epoch_metrics, step=epoch)
+                        except Exception as e:
+                            print(f"Notice: Failed to log epoch {epoch} metrics to MLflow ({e}). Continuing training...")
 
                     # 3. Early Stopping Step (Checkpoints model ONLY when metric improves)
                     should_stop = self._step_early_stopping(
@@ -1027,7 +1047,10 @@ class Pump2DTrainer:
 
         finally:
             if run_context is not None:
-                mlflow.end_run()
+                try:
+                    mlflow.end_run()
+                except Exception:
+                    pass
 
 
 def main() -> None:

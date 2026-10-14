@@ -170,10 +170,11 @@ def evaluate_model(
         boundary_only=bool(getattr(cfg_data, "boundary_only", False)),
     )
     
-    # We need the normalized target pressure for the EcotwinSMART wrapper
+    # Configurable target outlet pressure [Pa] (normalized to dataset stats)
+    target_p_pa = float(getattr(cfg_model, "outlet_pressure_target", 100000.0)) if cfg_model else 100000.0
     try:
-        p_target = (100000.0 - test_dataset.mean_vol_data[0]) / test_dataset.std_vol_data[0]
-    except AttributeError:
+        p_target = (target_p_pa - test_dataset.mean_vol_data[0]) / test_dataset.std_vol_data[0]
+    except (AttributeError, IndexError):
         p_target = 0.0
 
     print(f"\n--- Loading Checkpoint: {ckpt_file} ---")
